@@ -75,6 +75,7 @@ class MultiScaleSSM(nn.Module):
             C_t = C[:, t, :] # (b, d_state)
             
             y_t_scales = []
+            next_state_list = []
             
             for k in range(self.num_scales):
                 dt_tk = dts[k][:, t, :] # (b, d)
@@ -89,18 +90,20 @@ class MultiScaleSSM(nn.Module):
                 # Update hidden state
                 h_k = current_state[:, k] # (b, d, d_state)
                 h_k_new = dA_k * h_k + dB_k * x_t.unsqueeze(-1)
-                current_state[:, k] = h_k_new
+                next_state_list.append(h_k_new)
                 
                 # Compute output for this scale
                 # h_k_new: (b, d, d_state), C_t: (b, d_state)
                 y_tk = torch.einsum('bds,bs->bd', h_k_new, C_t)
                 y_t_scales.append(y_tk)
                 
+            current_state = torch.stack(next_state_list, dim=1)
+                
             # Concat outputs from all scales and project back to d_model
             # Concat along feature dim: (b, d * num_scales)
             y_t_concat = torch.cat(y_t_scales, dim=-1) 
             y_ssm.append(y_t_concat)
-            h_seq.append(current_state.clone())
+            h_seq.append(current_state)
             
         # (batch, seq_len, d_model * num_scales)
         y_out = torch.stack(y_ssm, dim=1)
