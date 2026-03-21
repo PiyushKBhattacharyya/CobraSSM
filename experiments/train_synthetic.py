@@ -70,7 +70,7 @@ def train():
     print(f"Model parameters: {model.parameter_count()/1e6:.2f} M")
     
     # Increased learning rate for fast synthetic convergence
-    optimizer = optim.AdamW(model.parameters(), lr=5e-3)
+    optimizer = optim.AdamW(model.parameters(), lr=5e-3, foreach=False)
     loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
     
     model.train()
