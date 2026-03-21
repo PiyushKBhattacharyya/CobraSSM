@@ -5,111 +5,64 @@ import torch.nn.functional as F
 
 class DifferentiableMemoryBuffer(nn.Module):
     """
-    Bounded differentiable KV memory buffer.
+    Linear Associative Memory with tied key/query projection.
 
-    Key architectural fix vs previous version
-    -----------------------------------------
-    OLD (broken for associative recall):
-        fused = x_t + h_context
-        k_t   = k_proj(fused)     # key   mixes current token INTO key
-        v_t   = v_proj(fused)     # value mixes hidden state INTO value
-        query = norm(x_t)         # read query uses raw token embedding
+    Write:  M = decay * M + S_t * v_t ⊗ k_t
+            k_t = normalize(kq_proj(x_prev))
+            v_t = v_proj(x_t)
 
-    Result: at K_i position the slot key ≈ K_i but slot value ≈ K_i (not V_i).
-            at V_i position the slot value ≈ V_i but slot key ≈ V_i (not K_i).
-            Query at Q_K matches the K_i slot but retrieves K_i info, not V_i.
+    Read:   y = M @ (temp * normalize(kq_proj(x_t)))
 
-    NEW (correct K→V binding):
-        k_t   = k_proj(h_context)   # key   from SSM state only
-        v_t   = v_proj(x_t)         # value from current token only
-        query = state_proj(h_t_summary)   passed in from CobraBlock
-
-    Why this works:
-        At V_i position (t = 2i+1):
-            h_context = state_proj(h_t.mean(scales, d_state)) encodes K_i via SSM recurrence
-            x_t = V_i embedding
-        → slot key   encodes K_i ✓
-        → slot value encodes V_i ✓
-
-        At query_pos with token Q_K (= K_j for some j):
-            h_context encodes Q_K (SSM just processed Q_K)
-            read query = state_proj(h_t) ≈ h_context at K_j position
-        → dot(query, key_from_Kj_position) is high ✓  → retrieves V_j ✓
-
-    h aggregation: mean over (scales, d_state) dims → (b, d_model)
-    state_proj: Linear(d_model, d_model)  [was Linear(d_state, d_model)]
+    Changes from previous version:
+    - decay_logit init 2.0→3.0: sigmoid(3.0)=0.952 vs 0.881.
+      With 7 pairs over 14 write steps, decay=0.88 attenuates the
+      first pair to 0.88^14=0.17. decay=0.95 gives 0.95^14=0.49.
+      The gradient d(sigmoid)/d(logit) is also larger at logit=3
+      (0.095 vs 0.105) — slight improvement but mainly the init matters.
     """
 
     def __init__(self, d_model, d_state=16, num_slots=64):
         super().__init__()
-        self.d_model   = d_model
-        self.d_state   = d_state
-        self.num_slots = num_slots
+        self.d_model = d_model
 
-        # Fixed slot centroid keys for routing writes
-        self.slot_keys = nn.Parameter(torch.randn(1, num_slots, d_model) * 0.02)
+        self.kq_proj = nn.Linear(d_model, d_model, bias=False)
+        self.v_proj  = nn.Linear(d_model, d_model, bias=False)
 
-        # h aggregation: (b, d_model, d_state) → mean over d_state → (b, d_model)
-        # then project to d_model
+        self.log_temp    = nn.Parameter(torch.tensor(1.386))  # exp(1.386) ≈ 4.0
+        self.decay_logit = nn.Parameter(torch.tensor(3.0))    # sigmoid(3.0) ≈ 0.952
+
         self.state_proj = nn.Linear(d_model, d_model, bias=False)
 
-        # key comes from hidden state; value comes from current token
-        self.k_proj = nn.Linear(d_model, d_model, bias=False)
-        self.v_proj = nn.Linear(d_model, d_model, bias=False)
+    @property
+    def temp(self):
+        return torch.exp(self.log_temp)
 
-    def _summarise_state(self, h_t):
-        """
-        h_t: (b, num_scales, d_model, d_state)
-        Returns h_context: (b, d_model)
-        """
-        # Mean over scales (dim 1) and d_state (dim 3) → (b, d_model)
-        h_mean = h_t.mean(dim=(1, 3))          # (b, d_model)
-        return self.state_proj(h_mean)          # (b, d_model)
+    @property
+    def decay(self):
+        return torch.sigmoid(self.decay_logit)
 
-    def forward(self, x_t, h_t, S_t, memory_state=None):
-        """
-        Write operation.
-        x_t  : (b, d_model)  — current token (becomes the VALUE)
-        h_t  : (b, num_scales, d_model, d_state)  — SSM state (becomes the KEY)
-        S_t  : (b, 1)  — soft write gate from EventDetector
-        """
+    def forward(self, x_t, x_prev, h_t, S_t, memory_state=None):
         b = x_t.size(0)
 
-        h_context = self._summarise_state(h_t)   # (b, d_model)
+        k_t = F.normalize(self.kq_proj(x_prev), dim=-1)
+        v_t = self.v_proj(x_t)
 
-        # Key from SSM state (encodes the PREVIOUS token context, i.e. K_i at V_i pos)
-        k_t = self.k_proj(h_context).unsqueeze(1)   # (b, 1, d_model)
-        # Value from current token (the actual V_i token embedding)
-        v_t = self.v_proj(x_t).unsqueeze(1)         # (b, 1, d_model)
+        write = S_t.unsqueeze(-1) * torch.bmm(
+            v_t.unsqueeze(2),
+            k_t.unsqueeze(1),
+        )
 
         if memory_state is None:
-            mem_k = torch.zeros(b, self.num_slots, self.d_model, device=x_t.device)
-            mem_v = torch.zeros(b, self.num_slots, self.d_model, device=x_t.device)
+            M = torch.zeros(b, self.d_model, self.d_model,
+                            device=x_t.device, dtype=x_t.dtype)
         else:
-            mem_k, mem_v = memory_state
+            M = memory_state
 
-        # Route to slots via fixed centroid keys
-        write_logits  = torch.matmul(k_t, self.slot_keys.transpose(-1, -2)) / (self.d_model ** 0.5)
-        write_weights = torch.softmax(write_logits, dim=-1)        # (b, 1, num_slots)
+        return self.decay * M + write
 
-        write_strength = write_weights.transpose(-1, -2) * S_t.unsqueeze(-1)  # (b, num_slots, 1)
-        decay_factor   = 1.0 - write_strength
+    def read_buffer(self, x_t, memory_state):
+        q = F.normalize(self.kq_proj(x_t), dim=-1)
+        return torch.bmm(memory_state, (self.temp * q).unsqueeze(2)).squeeze(2)
 
-        updated_mem_k = mem_k * decay_factor + k_t * write_strength
-        updated_mem_v = mem_v * decay_factor + v_t * write_strength
-
-        return (updated_mem_k, updated_mem_v)
-
-    def read_buffer(self, q_h, memory_state):
-        """
-        Read operation.
-        q_h : (b, d_model)  — query derived from hidden state (NOT raw token embedding)
-        """
-        mem_k, mem_v = memory_state
-        q = q_h.unsqueeze(1)   # (b, 1, d_model)
-
-        attn_logits  = torch.matmul(q, mem_k.transpose(-1, -2)) / (self.d_model ** 0.5)
-        attn_weights = torch.softmax(attn_logits, dim=-1)
-        read_out     = torch.matmul(attn_weights, mem_v)   # (b, 1, d_model)
-
-        return read_out.squeeze(1)   # (b, d_model)
+    def _summarise_state(self, h_t):
+        return self.state_proj(h_t.mean(dim=(1, 3)))
