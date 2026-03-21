@@ -42,12 +42,12 @@ Unifies continuous representation and exact-recall symbolic logic.
 We will structure the PyTorch implementation into modular components under `d:\Projects\CobraSSM`.
 
 ### Components
-- **`selective_scan.py`**: Contains the efficient parallel scan or chunk-wise recurrent mechanism for the SSM.
-- **`event_detector.py`**: Implements the lightweight scoring function and the trigger logic for read/write.
-- **`memory_buffer.py`**: Manages the bounded KV buffer states across steps/chunks.
+- **[selective_scan.py](file:///d:/Projects/CobraSSM/selective_scan.py)**: Contains the efficient parallel scan or chunk-wise recurrent mechanism for the SSM.
+- **[event_detector.py](file:///d:/Projects/CobraSSM/event_detector.py)**: Implements the lightweight scoring function and the trigger logic for read/write.
+- **[memory_buffer.py](file:///d:/Projects/CobraSSM/memory_buffer.py)**: Manages the bounded KV buffer states across steps/chunks.
 - **`strike_attention.py`**: Handles the cross-attention between token queries and the memory buffer.
-- **`cobra_block.py`**: Combines `SSM`, `Memory`, `Attention`, and `EventDetector` into a unified `CobraSSMBlock`. Incorporates SwiGLU feed-forward networks (if utilized) and RMSNorm.
-- **`model.py`**: The overarching language model class containing embeddings, $L$ blocks, and the language modeling head.
+- **[cobra_block.py](file:///d:/Projects/CobraSSM/cobra_block.py)**: Combines [SSM](file:///d:/Projects/CobraSSM/cobrassm/model.py#5-65), `Memory`, `Attention`, and `EventDetector` into a unified `CobraSSMBlock`. Incorporates SwiGLU feed-forward networks (if utilized) and RMSNorm.
+- **[model.py](file:///d:/Projects/CobraSSM/model.py)**: The overarching language model class containing embeddings, $L$ blocks, and the language modeling head.
 
 ### Constraints & Considerations
 - **$O(n)$ Complexity**: By restricting attention to a fixed-size buffer ($M$), the attention cost per token is $O(M)$, making the total process $O(nM)$ (effectively linear W.R.T sequence length).
@@ -71,3 +71,26 @@ We will structure the PyTorch implementation into modular components under `d:\P
 1. **Long Sequence Modeling**: Perplexity drops on long-context datasets (e.g., PG-19 or extended language modeling datasets).
 2. **Copy / Induction Tasks**: Synthetic tasks requiring exact token recall (e.g., synthetic associative recall masks, repeating sequences). This specifically stresses the memory limit of pure SSMs.
 3. **Standard Language Modeling**: Zero-shot evaluations to ensure foundational reasoning has not degraded.
+
+---
+
+## Phase 2: Optimization and Validation
+Building upon the completed Phase 1 PyTorch architecture, we now focus on training optimization, hardware throughput, and ecosystem integration.
+
+### 1. Synthetic Associative Recall Benchmark
+Before large-scale training, we must empirically validate the Differentiable Memory Buffer's ability to solve the exact-token recall problem.
+- **Task Design**: Implement a synthetic "Copy Task" dataset (e.g. sequence of random key-value mappings, followed by a query key).
+- **Execution Strategy**: Develop a lightweight `train_synthetic.py` script. Compare CobraSSM against a standard Transformer and a baseline Mamba model.
+- **Success Criteria**: CobraSSM achieves near 100% accuracy on this task across long context windows (e.g., up to 4k tokens).
+
+### 2. Triton Associative Scan Kernel
+The current [selective_scan.py](file:///d:/Projects/CobraSSM/selective_scan.py) uses a standard PyTorch [for](file:///d:/Projects/CobraSSM/cobrassm/cobra_block.py#46-106) loop. We must write a custom parallel kernel for true $O(n)$ hardware speed.
+- **Design**: Implement a hardware-aware parallel associative scan in Triton for the Multi-Scale SSM path. Standard Mamba utilizes a similar approach to avoid strict sequential computational bottlenecks.
+- **Implementation Location**: Create `cobrassm/ops/triton_scan.py`.
+- **Integration**: Update `MultiScaleSSM.forward()` to route to the compiled Triton kernel automatically.
+
+### 3. Hugging Face Ecosystem Integration
+To ensure immediate usability and simplified evaluation.
+- **Configuration**: Create `CobraConfig` inheriting from `PretrainedConfig`.
+- **Model Wrapper**: Create `CobraForCausalLM` inheriting from `PreTrainedModel`.
+- **Testing**: Ensure model weights can be saved and reloaded using the standard `.save_pretrained()` and `AutoModelForCausalLM.from_pretrained()` API paradigm.
