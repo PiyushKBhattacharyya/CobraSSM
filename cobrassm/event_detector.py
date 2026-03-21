@@ -25,7 +25,7 @@ class EventDetector(nn.Module):
             nn.Linear(d_model // 4, 1)
         )
 
-    def forward(self, x_t, h_t):
+    def forward(self, x_t, h_t, h_prev=None):
         """
         x_t: (batch, d_model)
         h_t: (batch, num_scales, d_model, d_state) - The hidden state from the SSM backbone
@@ -34,22 +34,26 @@ class EventDetector(nn.Module):
         # Feature 1: The input token information
         x_feat = self.x_proj(x_t)
         
-        # To keep the tensor entirely on the AMD GPU (DirectML doesn't support native torch.std), 
-        # we compute the standard deviation manually using basic supported ops:
+        # Feature 2: Summarize the multi-scale hidden state
+        # compute manual std for DirectML
         h_mean = h_t.mean(dim=-1, keepdim=True)
         h_std_manual = torch.sqrt((h_t - h_mean).pow(2).mean(dim=-1) + 1e-6)
-        
-        # h_std_manual: (batch, num_scales)
-        # Average the "surprise" across all multi-scale paths
-        h_std = h_std_manual.mean(dim=1)
-        
+        h_std = h_std_manual.mean(dim=1) # (batch, d_model)
         h_feat = self.h_proj(h_std)
         
-        # Concatenate features
-        combined = torch.cat([x_feat, h_feat], dim=-1)
+        # Feature 3: Surprise signal (magnitude of state change)
+        if h_prev is not None:
+            # Manual Euclidean distance for DirectML
+            diff = (h_t - h_prev).pow(2).sum(dim=(1, 2, 3))
+            surprise = torch.sqrt(diff + 1e-6)
+            surprise_feat = torch.sigmoid(surprise).unsqueeze(-1).expand(-1, x_feat.size(-1))
+            combined = torch.cat([x_feat, h_feat + surprise_feat], dim=-1)
+        else:
+            combined = torch.cat([x_feat, h_feat], dim=-1)
         
         # Compute soft gating score
         s_logit = self.scorer(combined)
         S_t = torch.sigmoid(s_logit)
         
         return S_t
+
