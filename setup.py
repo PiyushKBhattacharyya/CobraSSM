@@ -8,6 +8,7 @@ setup(
     packages=find_packages(),
     install_requires=[
         "torch>=2.0.0",
+        "transformers",
     ],
     python_requires=">=3.8",
 )

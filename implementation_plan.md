@@ -10,32 +10,22 @@ Design and implement **CobraSSM**, a novel sequence model combining a Selective 
 ## Proposed Architecture Design
 
 ### 1. Multi-Scale Selective SSM Backbone
-Maintains continuous hidden states with input-dependent parameterization. Uses multiple state spaces with different decay rates to significantly improve over baseline single Mamba models.
-- **Formulation (Multi-Scale)**:
-  - Multiple components for $A$, each initialized with different timescale priors.
-  - $\Delta_t = \text{softplus}(\text{Linear}(x_t))$
-  - $\bar{A}_k = \exp(\Delta_t A_k)$ (for each scale $k$)
-  - $\bar{B}_k = \Delta_t B_k(x_t)$
-  - $h_{t,k} = \bar{A}_k h_{t-1,k} + \bar{B}_k x_t$
-  - $y_t^{ssm} = \sum_k C_k(x_t) h_{t,k}$
+- **Low-Rank Selective B**: To prevent projection dimension blowup, $B_t$ is implemented as a low-rank mixing of an input-dependent vector and a learned per-feature matrix ($B_{mix}$).
+- **Principled A-scaling**: $A$ matrices are initialized with evenly spaced log-decays to capture multi-scale temporal dependencies.
+- **Mamba-style Skip**: Includes a learned $D$ skip connection for direct signal propagation.
 
-### 2. Event-Driven Sparse Attention ("Strike Mechanism")
-Dynamically detects important tokens to trigger an attention read, avoiding $O(n^2)$ global attention.
-- **Event Detector**: An improved gating module that incorporates the latest SSM hidden state $h_t$ alongside input $x_t$ (and potentially an entropy/surprise signal) to compute an importance score $S_t \in [0, 1]$.
-- **Trigger**: The primary mechanism is **soft gating** during training, where memory output is modulated smoothly by $S_t$. During inference, an optional top-k threshold can be applied for efficiency.
-- **Sparse Attention**: When triggered, the current token generates queries to read from a structured differentiable memory buffer. To ensure stability, **RMSNorm** is applied before the Query, Key, and Value projections.
+### 2. Event-Driven Strike Mechanism (Refined)
+- **Hard Structural Read Gate**: Instead of a purely learned gate, the model uses a hard structural gate triggered by the `SEP` token (ID=1). Memory reads are only enabled at the position immediately following the `SEP` token (the query position).
+- **Strike Trigger**: The `EventDetector` still provides a soft write-strength $S_t$ to control which information enters the memory.
 
-### 3. Differentiable Structured Memory Module
-A bounded, fully differentiable Key-Value (KV) memory buffer of size $M \ll N$ with time encodings.
-- **Write Operation (Soft Probability + Slot Attention/Overwrite)**: Replaces hard LRU with an attention-weighted overwrite mechanism (or slot attention). Entries are updated smoothly with soft write probability modulated by $S_t$. Old memories naturally decay.
-- **Temporal Bias**: Incorporates positional decay or relative time encoding into the memory keys/values so that the attention mechanism does not treat all entries equally but has awareness of recency.
-- **Read Operation**: Query $Q_t$ attends over the buffer $K$. $y_t^{mem} = \text{Softmax}(Q_t K^T / \sqrt{d} + M_{\text{pos}}) V$, where $M_{\text{pos}}$ is a temporal decay bias.
+### 3. Linear Associative Memory Module
+- **Formulation**: Replaced slot attention with a Linear Associative Memory ($M_t = \lambda M_{t-1} + S_t (v_t \otimes k_t)$).
+- **Tied Key-Query**: Uses a unified `kq_proj` with normalization to ensure stable semantic matching.
+- **Learned Dynamics**: Incorporates learned `decay` (recency bias) and `temperature` (sharpness) parameters.
 
-### 4. Dual-Path Processing and Residual Stability
-Unifies continuous representation and exact-recall symbolic logic.
-- **Path 1 (Continuous Flow)**: Returns $y_t^{ssm}$, modeling local interactions spanning multiple scales.
-- **Path 2 (Symbolic Flow)**: Returns $y_t^{mem}$, retrieving specific exact tokens from the memory buffer.
-- **Fusion and Residual Path**: To ensure deep network stability, the block output is strictly residual: $y_t^{out} = x_t + \text{CobraBlock}(x_t)$. Inside the block, the paths merge as $y_{block} = y_t^{ssm} + g_t \odot \text{Linear}(y_t^{mem})$.
+### 4. Dual-Path Fusion and Residual Stability
+- **Fusion Logic**: $y_{block} = y^{ssm} + \sigma(\text{FusionGate}) \odot \text{Linear}(y^{mem})$.
+- **Residual Path**: Retains the strictly residual $x + \text{Block}(x)$ design for depth stability.
 
 ## PyTorch Implementation Strategy
 

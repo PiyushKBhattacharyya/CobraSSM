@@ -26,3 +26,5 @@ build/
 # Ignore OS files
 .DS_Store
 Thumbs.db
+
+test_model/
