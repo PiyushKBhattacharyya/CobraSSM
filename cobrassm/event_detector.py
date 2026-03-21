@@ -34,10 +34,15 @@ class EventDetector(nn.Module):
         # Feature 1: The input token information
         x_feat = self.x_proj(x_t)
         
-        # Feature 2: Summarize the multi-scale hidden state
-        # We use standard deviation across the state dimension as a "surprise" / "entropy" surrogate
-        # h_std: (batch, num_scales, d_model) -> (batch, d_model) by taking mean across scales
-        h_std = torch.std(h_t, dim=-1).mean(dim=1)
+        # To keep the tensor entirely on the AMD GPU (DirectML doesn't support native torch.std), 
+        # we compute the standard deviation manually using basic supported ops:
+        h_mean = h_t.mean(dim=-1, keepdim=True)
+        h_std_manual = torch.sqrt((h_t - h_mean).pow(2).mean(dim=-1) + 1e-6)
+        
+        # h_std_manual: (batch, num_scales)
+        # Average the "surprise" across all multi-scale paths
+        h_std = h_std_manual.mean(dim=1)
+        
         h_feat = self.h_proj(h_std)
         
         # Concatenate features
