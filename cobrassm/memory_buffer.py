@@ -1,13 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .hybrid_utils import hybrid_apply
 
 
 class DifferentiableMemoryBuffer(nn.Module):
     """
     Linear Associative Memory with tied key/query projection.
-    Supports Hybrid GPU-Forward/CPU-Backward for DirectML stability.
+    Stable recurrent version.
     """
 
     def __init__(self, d_model, d_state=16, num_slots=64):
@@ -30,22 +29,14 @@ class DifferentiableMemoryBuffer(nn.Module):
     def decay(self):
         return torch.sigmoid(self.decay_logit)
 
-
-    def _core_forward_batch(self, *args):
-        """Pure functional forward for Hybrid Autograd."""
-        # args: x, x_prev, S, kq_weight, v_weight, log_temp, decay_logit, memory_init
-        x, x_prev, S = args[0], args[1], args[2]
-        kq_weight, v_weight = args[3], args[4]
-        log_temp, decay_logit = args[5], args[6]
-        memory_init = args[7]
-        
+    def forward_batch(self, x, x_prev, S, memory_init=None):
         b, seq_len, d = x.shape
         device = x.device
         dtype = x.dtype
         
-        k_all = F.normalize(F.linear(x_prev, kq_weight), dim=-1)
-        v_all = F.linear(x, v_weight)
-        decay = torch.sigmoid(decay_logit)
+        k_all = F.normalize(self.kq_proj(x_prev), dim=-1)
+        v_all = self.v_proj(x)
+        decay = self.decay
         
         current_M = memory_init if memory_init is not None else \
                     torch.zeros(b, d, d, device=device, dtype=dtype)
@@ -64,16 +55,8 @@ class DifferentiableMemoryBuffer(nn.Module):
         M_seq = torch.stack(M_seq_list, dim=1)
         return M_seq, current_M
 
-    def forward_batch(self, x, x_prev, S, memory_init=None):
-        params = [self.kq_proj.weight, self.v_proj.weight, self.log_temp, self.decay_logit]
-        
-        if x.device.type == 'privateuseone' and x.requires_grad:
-             return hybrid_apply(self._core_forward_batch, params, x, x_prev, S, *params, memory_init)
-        else:
-             return self._core_forward_batch(x, x_prev, S, *params, memory_init)
-
     def forward(self, x_t, x_prev, h_t, S_t, memory_state=None):
-        """Single step forward (Inference)."""
+        """Single step forward."""
         k = F.normalize(self.kq_proj(x_prev), dim=-1)
         v = self.v_proj(x_t)
         write = S_t.unsqueeze(-1) * torch.bmm(v.unsqueeze(2), k.unsqueeze(1))

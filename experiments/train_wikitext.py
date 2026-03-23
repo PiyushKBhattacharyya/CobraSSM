@@ -7,13 +7,9 @@ from cobrassm import CobraConfig, CobraForCausalLM
 import time
 
 def train_wikitext():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    try:
-        import torch_directml
-        device = torch_directml.device()
-        print("Using DirectML with Hybrid Autograd Strategy.")
-    except ImportError:
-        pass
+    device = torch.device('cpu')
+    print("Using CPU for stable training baseline.")
+
 
     # 1. Setup Tokenizer and Model
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
