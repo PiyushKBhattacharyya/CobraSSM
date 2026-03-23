@@ -1,24 +1,13 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from .hybrid_utils import hybrid_apply
 
 
 class DifferentiableMemoryBuffer(nn.Module):
     """
     Linear Associative Memory with tied key/query projection.
-
-    Write:  M = decay * M + S_t * v_t ⊗ k_t
-            k_t = normalize(kq_proj(x_prev))
-            v_t = v_proj(x_t)
-
-    Read:   y = M @ (temp * normalize(kq_proj(x_t)))
-
-    Changes from previous version:
-    - decay_logit init 2.0→3.0: sigmoid(3.0)=0.952 vs 0.881.
-      With 7 pairs over 14 write steps, decay=0.88 attenuates the
-      first pair to 0.88^14=0.17. decay=0.95 gives 0.95^14=0.49.
-      The gradient d(sigmoid)/d(logit) is also larger at logit=3
-      (0.095 vs 0.105) — slight improvement but mainly the init matters.
+    Supports Hybrid GPU-Forward/CPU-Backward for DirectML stability.
     """
 
     def __init__(self, d_model, d_state=16, num_slots=64):
@@ -41,24 +30,59 @@ class DifferentiableMemoryBuffer(nn.Module):
     def decay(self):
         return torch.sigmoid(self.decay_logit)
 
-    def forward(self, x_t, x_prev, h_t, S_t, memory_state=None):
-        b = x_t.size(0)
 
-        k_t = F.normalize(self.kq_proj(x_prev), dim=-1)
-        v_t = self.v_proj(x_t)
+    def _core_forward_batch(self, *args):
+        """Pure functional forward for Hybrid Autograd."""
+        # args: x, x_prev, S, kq_weight, v_weight, log_temp, decay_logit, memory_init
+        x, x_prev, S = args[0], args[1], args[2]
+        kq_weight, v_weight = args[3], args[4]
+        log_temp, decay_logit = args[5], args[6]
+        memory_init = args[7]
+        
+        b, seq_len, d = x.shape
+        device = x.device
+        dtype = x.dtype
+        
+        k_all = F.normalize(F.linear(x_prev, kq_weight), dim=-1)
+        v_all = F.linear(x, v_weight)
+        decay = torch.sigmoid(decay_logit)
+        
+        current_M = memory_init if memory_init is not None else \
+                    torch.zeros(b, d, d, device=device, dtype=dtype)
+        
+        M_seq_list = []
+        for t in range(seq_len):
+            k = k_all[:, t]
+            v = v_all[:, t]
+            s = S[:, t]
+            
+            # Write: v ⊗ k
+            write = s.unsqueeze(-1) * torch.bmm(v.unsqueeze(2), k.unsqueeze(1))
+            current_M = decay * current_M + write
+            M_seq_list.append(current_M)
+            
+        M_seq = torch.stack(M_seq_list, dim=1)
+        return M_seq, current_M
 
-        write = S_t.unsqueeze(-1) * torch.bmm(
-            v_t.unsqueeze(2),
-            k_t.unsqueeze(1),
-        )
-
-        if memory_state is None:
-            M = torch.zeros(b, self.d_model, self.d_model,
-                            device=x_t.device, dtype=x_t.dtype)
+    def forward_batch(self, x, x_prev, S, memory_init=None):
+        params = [self.kq_proj.weight, self.v_proj.weight, self.log_temp, self.decay_logit]
+        
+        if x.device.type == 'privateuseone' and x.requires_grad:
+             return hybrid_apply(self._core_forward_batch, params, x, x_prev, S, *params, memory_init)
         else:
-            M = memory_state
+             return self._core_forward_batch(x, x_prev, S, *params, memory_init)
 
-        return self.decay * M + write
+    def forward(self, x_t, x_prev, h_t, S_t, memory_state=None):
+        """Single step forward (Inference)."""
+        k = F.normalize(self.kq_proj(x_prev), dim=-1)
+        v = self.v_proj(x_t)
+        write = S_t.unsqueeze(-1) * torch.bmm(v.unsqueeze(2), k.unsqueeze(1))
+        return self.decay * memory_state + write
+
+    def read_buffer_batch(self, x, M_seq):
+        q = F.normalize(self.kq_proj(x), dim=-1)
+        temp_q = (self.temp * q).unsqueeze(-1)
+        return torch.matmul(M_seq, temp_q).squeeze(-1)
 
     def read_buffer(self, x_t, memory_state):
         q = F.normalize(self.kq_proj(x_t), dim=-1)

@@ -73,61 +73,49 @@ class CobraBlock(nn.Module):
     def forward(self, x, ssm_state=None, mem_state=None, input_ids=None):
         """
         x         : (batch, seq_len, d_model)
-        input_ids : (batch, seq_len) int64 — raw token IDs, used for SEP detection
-                    If None, memory is read at every position (inference fallback).
+        input_ids : (batch, seq_len) int64
         """
         b, seq_len, d = x.shape
-        residual = x
-
-        # ── PATH 1: SSM ───────────────────────────────────────────────────────
         x_norm = self.norm_ssm(x)
-        y_ssm, h_seq, ssm_state_out = self.ssm(x_norm, state=ssm_state)
 
-        # ── Build hard read mask from token IDs ───────────────────────────────
-        # read_mask[b, t] = 1.0 iff input_ids[b, t-1] == SEP_ID
-        # i.e. the current position is immediately after SEP → query_pos
+        # 1. Multi-Scale SSM path (Vectorized)
+        y_ssm, ssm_seq, next_ssm_state = self.ssm(x_norm, state=ssm_state)
+
+        # 2. Event Detection (Full sequence)
+        S = self.event_detector.forward_sequence(x_norm, ssm_seq, input_ids)
+
+        # 3. Differentiable Memory Path (Vectorized)
+        # Shifted input for key generation
+        x_prev = torch.cat([
+            torch.zeros(b, 1, d, device=x.device, dtype=x.dtype),
+            self.norm_mem(x[:, :-1, :])
+        ], dim=1)
+        
+        x_mem_in = self.norm_mem(x)
+        M_seq, next_mem_state = self.memory.forward_batch(x_mem_in, x_prev, S, memory_init=mem_state)
+
+        # 4. Gated Read
+        y_mem_raw = self.memory.read_buffer_batch(x_mem_in, M_seq)
+        
+        # Hard structural read gating (SEP)
         if input_ids is not None:
-            # Shift IDs right by 1: prev_ids[t] = input_ids[t-1]
+            # Shift IDs right to trigger after SEP
             prev_ids = torch.zeros_like(input_ids)
             prev_ids[:, 1:] = input_ids[:, :-1]
-            # (b, seq_len) float mask, 1.0 only at query_pos
-            read_mask = (prev_ids == self.SEP_ID).float()
+            read_mask = (prev_ids == self.SEP_ID).float().unsqueeze(-1)
+            y_mem = y_mem_raw * read_mask
         else:
-            read_mask = torch.ones(b, seq_len, device=x.device)
+            y_mem = y_mem_raw
 
-        # ── PATH 2: Memory ────────────────────────────────────────────────────
-        y_mem_list = []
-        current_M  = mem_state
-        h_prev     = None
-
-        for t in range(seq_len):
-            x_t    = self.norm_mem(x[:, t, :])
-            x_prev = self.norm_mem(x[:, t-1, :]) if t > 0 \
-                     else torch.zeros_like(x_t)
-            h_t    = h_seq[:, t]
-
-            # Write gate (EventDetector)
-            S_t    = self.event_detector(x_t, h_t, h_prev)
-            h_prev = h_t.clone()
-            current_M = self.memory(x_t, x_prev, h_t, S_t, current_M)
-
-            # Hard structural read: only open at query_pos (after SEP)
-            r_t     = read_mask[:, t].unsqueeze(1)          # (b, 1)
-            y_raw   = self.memory.read_buffer(x_t, current_M)
-            y_mem_t = r_t * y_raw                           # zero everywhere except query_pos
-            y_mem_list.append(y_mem_t)
-
-        y_mem = torch.stack(y_mem_list, dim=1)   # (b, seq_len, d)
-
-        # ── Fusion ────────────────────────────────────────────────────────────
+        # 5. Fusion
         g_t     = torch.sigmoid(self.fusion_gate(x_norm))
         y_block = y_ssm + g_t * self.mem_out_proj(y_mem)
-        x       = residual + y_block
+        x       = x + y_block
 
-        # ── MLP (SwiGLU) ──────────────────────────────────────────────────────
+        # 6. MLP (SwiGLU)
         residual  = x
         up        = self.mlp_up(self.mlp_norm(x))
         gate, val = up.chunk(2, dim=-1)
         out       = residual + self.mlp_down(F.silu(gate) * val)
 
-        return out, ssm_state_out, current_M
+        return out, next_ssm_state, next_mem_state
