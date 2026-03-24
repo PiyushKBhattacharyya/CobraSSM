@@ -61,5 +61,56 @@ class CobraSSM(nn.Module):
         logits = self.lm_head(x)
         return logits, out_ssm_states, out_mem_states
 
+    def forward_step(self, input_ids, ssm_states, mem_states, prev_embs, seen_seps):
+        """
+        O(1) single-token generation step.
+        input_ids : (b, 1)
+        ssm_states: list of (b, K, D, S) per layer
+        mem_states: list of (b, D, D) per layer
+        prev_embs : list of (b, d) per layer — cached norm_mem(prev token)
+        seen_seps : list of (b,) bool per layer
+        Returns: logits (b, 1, V), new states
+        """
+        x = self.embedding(input_ids)  # (b, 1, d)
+
+        new_ssm, new_mem, new_prev, new_sep = [], [], [], []
+
+        for i, block in enumerate(self.blocks):
+            x, s_ssm, s_mem, p_emb, s_sep = block.forward_step(
+                x, ssm_states[i], mem_states[i],
+                prev_embs[i], seen_seps[i],
+                input_id_t=input_ids[:, 0]
+            )
+            new_ssm.append(s_ssm)
+            new_mem.append(s_mem)
+            new_prev.append(p_emb)
+            new_sep.append(s_sep)
+
+        x = self.norm_f(x)
+        logits = self.lm_head(x)
+        return logits, new_ssm, new_mem, new_prev, new_sep
+
+    def init_cache(self, batch_size, device, dtype=torch.float32):
+        """Initialize empty cache for generation."""
+        ssm_states = [
+            torch.zeros(batch_size, block.ssm.num_scales, block.ssm.d_model,
+                        block.ssm.d_state, device=device, dtype=dtype)
+            for block in self.blocks
+        ]
+        mem_states = [
+            torch.zeros(batch_size, self.d_model, self.d_model,
+                        device=device, dtype=dtype)
+            for _ in self.blocks
+        ]
+        prev_embs = [
+            torch.zeros(batch_size, self.d_model, device=device, dtype=dtype)
+            for _ in self.blocks
+        ]
+        seen_seps = [
+            torch.zeros(batch_size, device=device, dtype=torch.bool)
+            for _ in self.blocks
+        ]
+        return ssm_states, mem_states, prev_embs, seen_seps
+
     def parameter_count(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)

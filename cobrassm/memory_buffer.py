@@ -55,12 +55,22 @@ class DifferentiableMemoryBuffer(nn.Module):
         M_seq = torch.stack(M_seq_list, dim=1)
         return M_seq, current_M
 
-    def forward(self, x_t, x_prev, h_t, S_t, memory_state=None):
-        """Single step forward."""
+    def forward_step(self, x_t, x_prev, S_t, memory_state):
+        """
+        Single step forward for O(1) generation.
+        x_t, x_prev: (b, d)
+        S_t: (b, 1)
+        memory_state: (b, d, d)
+        """
         k = F.normalize(self.kq_proj(x_prev), dim=-1)
         v = self.v_proj(x_t)
         write = S_t.unsqueeze(-1) * torch.bmm(v.unsqueeze(2), k.unsqueeze(1))
-        return self.decay * memory_state + write
+        new_M = self.decay * memory_state + write
+        return new_M
+
+    def forward(self, x_t, x_prev, h_t, S_t, memory_state=None):
+        """Legacy single step forward."""
+        return self.forward_step(x_t, x_prev, S_t, memory_state)
 
     def read_buffer_batch(self, x, M_seq):
         q = F.normalize(self.kq_proj(x), dim=-1)

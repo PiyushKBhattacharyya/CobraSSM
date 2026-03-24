@@ -96,3 +96,46 @@ class MultiScaleSSM(nn.Module):
         y_final = self.out_proj(y_out) + x * self.D
         
         return y_final, h_surprise_seq, current_h
+
+    def forward_step(self, x_t, state):
+        """
+        Single-token recurrence for O(1) generation.
+        x_t   : (b, 1, d)
+        state : (b, num_scales, d_model, d_state)
+        Returns: y_t (b, 1, d), h_surprise_t (b, 1, d), new_state
+        """
+        b, _, d = x_t.shape
+        x_proj_out = self.x_proj(x_t)  # (b, 1, proj_dim)
+        dt_inp, b_vec, C_t = torch.split(
+            x_proj_out, [self.dt_rank, self.d_state, self.d_state], dim=-1
+        )
+        # B: (b, 1, d, s)
+        B_t = b_vec.unsqueeze(2) * self.B_mix.unsqueeze(0).unsqueeze(0)
+        # dts: (b, 1, scales, d)
+        dts = [F.softplus(proj(dt_inp)) for proj in self.dt_projs]
+        dt_t = torch.clamp(torch.stack(dts, dim=2), max=20.0)  # (b, 1, K, D)
+
+        A = -torch.exp(self.A_log)  # (K, D, S)
+
+        # Squeeze time dim for the recurrence
+        dt_1 = dt_t[:, 0]    # (b, K, D)
+        B_1  = B_t[:, 0]     # (b, D, S)
+        x_1  = x_t[:, 0]     # (b, D)
+        C_1  = C_t[:, 0]     # (b, S)
+
+        dA  = torch.exp(dt_1.unsqueeze(-1) * A.unsqueeze(0))        # (b, K, D, S)
+        dBx = dt_1.unsqueeze(-1) * B_1.unsqueeze(1) * x_1.unsqueeze(1).unsqueeze(-1)
+
+        new_state = dA * state + dBx
+
+        # Surprise
+        h_mean = new_state.mean(dim=-1, keepdim=True)
+        h_std  = torch.sqrt((new_state - h_mean).pow(2).mean(dim=-1) + 1e-6)
+        h_surprise = h_std.mean(dim=1).unsqueeze(1)  # (b, 1, D)
+
+        # Output
+        y_t = torch.einsum('bkds,bs->bkd', new_state, C_1)  # (b, K, D)
+        y_out = y_t.unsqueeze(1).reshape(b, 1, -1)           # (b, 1, K*D)
+        y_final = self.out_proj(y_out) + x_t * self.D
+
+        return y_final, h_surprise, new_state

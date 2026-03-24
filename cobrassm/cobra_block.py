@@ -119,3 +119,55 @@ class CobraBlock(nn.Module):
         out       = residual + self.mlp_down(F.silu(gate) * val)
 
         return out, next_ssm_state, next_mem_state
+
+    def forward_step(self, x_t, ssm_state, mem_state, x_prev_emb, seen_sep, input_id_t=None):
+        """
+        O(1) single-token forward for generation.
+        x_t        : (b, 1, d)  — current token embedding
+        ssm_state  : (b, K, D, S)
+        mem_state  : (b, D, D)
+        x_prev_emb : (b, d)    — previous token's normed embedding
+        seen_sep   : (b,) bool — whether SEP has been seen
+        input_id_t : (b,) int  — current token ID (to detect SEP)
+        Returns: out, new_ssm, new_mem, new_x_prev, new_seen_sep
+        """
+        b, _, d = x_t.shape
+        x_norm = self.norm_ssm(x_t)  # (b, 1, d)
+
+        # 1. SSM step
+        y_ssm, h_surprise, new_ssm = self.ssm.forward_step(x_norm, ssm_state)
+
+        # 2. Event Detection (single step)
+        S = self.event_detector(x_norm[:, 0], h_surprise[:, 0]).unsqueeze(1)  # (b, 1, 1)
+
+        # 3. Memory write step
+        x_mem_in = self.norm_mem(x_t)[:, 0]     # (b, d)
+        new_mem = self.memory.forward_step(x_mem_in, x_prev_emb, S[:, 0], mem_state)
+
+        # 4. Memory read
+        y_mem_raw = self.memory.read_buffer(x_mem_in, new_mem)  # (b, d)
+
+        # 5. Hard structural SEP gating
+        if input_id_t is not None:
+            new_seen_sep = seen_sep | (input_id_t == self.SEP_ID)
+            read_mask = new_seen_sep.float().unsqueeze(-1)  # (b, 1)
+            y_mem = y_mem_raw * read_mask
+        else:
+            new_seen_sep = seen_sep
+            y_mem = y_mem_raw
+
+        # 6. Fusion
+        g_t = torch.sigmoid(self.fusion_gate(x_norm[:, 0]))
+        y_block = y_ssm[:, 0] + g_t * self.mem_out_proj(y_mem)
+        x_out = x_t[:, 0] + y_block  # (b, d)
+
+        # 7. MLP (SwiGLU)
+        residual = x_out
+        up = self.mlp_up(self.mlp_norm(x_out))
+        gate, val = up.chunk(2, dim=-1)
+        out = residual + self.mlp_down(F.silu(gate) * val)
+
+        # Cache the current normed embedding as next x_prev
+        new_x_prev = self.norm_mem(x_t)[:, 0]  # (b, d)
+
+        return out.unsqueeze(1), new_ssm, new_mem, new_x_prev, new_seen_sep
