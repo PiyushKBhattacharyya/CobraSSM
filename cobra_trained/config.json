@@ -1,0 +1,14 @@
+{
+  "bos_token_id": 1,
+  "d_model": 128,
+  "d_state": 16,
+  "eos_token_id": 2,
+  "model_type": "cobra",
+  "num_hidden_layers": 1,
+  "num_scales": 4,
+  "num_slots": 32,
+  "pad_token_id": 0,
+  "sep_id": 1,
+  "transformers_version": "5.3.0",
+  "vocab_size": 100
+}

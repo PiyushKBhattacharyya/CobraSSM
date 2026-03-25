@@ -50,6 +50,7 @@ class CobraCache:
 
 
 class CobraForCausalLM(CobraPreTrainedModel, GenerationMixin):
+    _tied_weights_keys = {"cobra.lm_head.weight": "cobra.embedding.weight"}
 
     def __init__(self, config: CobraConfig):
         super().__init__(config)
