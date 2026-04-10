@@ -28,3 +28,5 @@ build/
 Thumbs.db
 
 test_model/
+cobra_trained/
+test_save/

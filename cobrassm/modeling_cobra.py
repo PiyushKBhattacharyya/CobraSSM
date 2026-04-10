@@ -50,7 +50,6 @@ class CobraCache:
 
 
 class CobraForCausalLM(CobraPreTrainedModel, GenerationMixin):
-    _tied_weights_keys = {"cobra.lm_head.weight": "cobra.embedding.weight"}
 
     def __init__(self, config: CobraConfig):
         super().__init__(config)
@@ -64,6 +63,42 @@ class CobraForCausalLM(CobraPreTrainedModel, GenerationMixin):
         )
         self.tie_weights()
         self.post_init()
+
+    def tie_weights(self, **kwargs):
+        """Tie embedding and lm_head weights."""
+        self.cobra.lm_head.weight = self.cobra.embedding.weight
+
+    def save_pretrained(self, save_directory, **kwargs):
+        """Save with shared tensors handled manually."""
+        import os, json
+        os.makedirs(save_directory, exist_ok=True)
+        # Save config
+        self.config.save_pretrained(save_directory)
+        # Save state dict — only keep one copy of tied weights
+        state = self.state_dict()
+        # Remove the duplicate tied weight
+        if 'cobra.lm_head.weight' in state and 'cobra.embedding.weight' in state:
+            if state['cobra.lm_head.weight'].data_ptr() == state['cobra.embedding.weight'].data_ptr():
+                del state['cobra.lm_head.weight']
+        torch.save(state, os.path.join(save_directory, 'pytorch_model.bin'))
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, config=None, **kwargs):
+        """Load with tied weight reconstruction."""
+        import os
+        if config is None:
+            config = CobraConfig.from_pretrained(pretrained_model_name_or_path)
+        model = cls(config)
+        ckpt_path = os.path.join(pretrained_model_name_or_path, 'pytorch_model.bin')
+        if os.path.exists(ckpt_path):
+            state = torch.load(ckpt_path, map_location='cpu', weights_only=True)
+            # Reconstruct tied weight if missing
+            if 'cobra.lm_head.weight' not in state and 'cobra.embedding.weight' in state:
+                state['cobra.lm_head.weight'] = state['cobra.embedding.weight']
+            model.load_state_dict(state, strict=False)
+        model.tie_weights()
+        return model
+
 
     def get_input_embeddings(self):
         return self.cobra.embedding
