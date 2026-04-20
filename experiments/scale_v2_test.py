@@ -50,9 +50,11 @@ def scale_v2_audit():
         _ = model(input_ids[:, :64])
         
     start_bench = time.time()
+    # Using autocast is a secondary safety layer for MPS dtype stability
     with torch.no_grad():
-        # The model uses the internal Chunked Parallel Scan automatically
-        _ = model(input_ids)
+        with torch.autocast(device_type="mps", dtype=torch.float16):
+            # The model uses the internal Chunked Parallel Scan automatically
+            _ = model(input_ids)
     
     if device.type == "mps":
         torch.mps.synchronize()
