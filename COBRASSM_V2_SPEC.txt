@@ -1,0 +1,47 @@
+============================================================
+  COBRASSM V2: THE COGNITIVE REFINEMENT SPEC
+============================================================
+Code Name: "Iron Cobra"
+Status: Design Draft (Phase: The Scientist Path)
+
+1. THE V2 VISION
+-----------------
+The goal of V2 is to transition from a "Passive Storage" model to an "Active Cognitive" model. In V1, the model remembers everything equally until it fades. In V2, the model chooses exactly WHAT to forget and WHEN to forget it.
+
+2. KEY ARCHITECTURAL UPGRADES:
+------------------------------
+
+A. DYNAMIC DECAY GATING (The "Eraser")
+   - OLD: Memory decays at a fixed rate (e.g., 0.95 every step).
+   - NEW: The model has a 'Decay Gate' -- lambda_t = sigmoid(W_decay * x_t).
+   - WHY: If the model finishes a sentence and starts a new topic, it can 'erase' the old sentence from the memory buffer instantly to prevent noise and confusion.
+
+B. SSM-MEMORY FUSION (The "Awareness")
+   - OLD: The Memory Buffer only knows about the current word (x_t).
+   - NEW: The Memory Buffer is fed the 'Surprise' signal (h_std) from the SSM.
+   - WHY: This allows the memory to index facts based on context. If the SSM says "This word is shocking!", the memory writes it with 5x more strength.
+
+C. REFINED KEY/QUERY PROJECTION
+   - OLD: Simple linear projection.
+   - NEW: Multi-Head Memory Projections (similar to Transformer Multi-Head Attention, but for the associative matrix).
+   - WHY: Allows the model to store multiple independent associations in the same matrix (e.g., one head for 'names', one head for 'color results').
+
+3. MATHEMATICAL EVOLUTION:
+--------------------------
+Current Recurrence:
+  M[t] = lambda * M[t-1] + S[t] * (v @ k)
+
+V2 Recurrence (Proposed):
+  M[t] = Gate(x[t]) * M[t-1] + S[t] * (v @ k)
+  
+  Where Gate(x[t]) is a learned vector that decides which 'channels' of memory to preserve or delete.
+
+4. EXPECTED BREAKTHROUGHS:
+---------------------------
+- Higher Associative Accuracy: Should pass 'Needle in Haystack' tests at 32k+ tokens with 99% accuracy.
+- Smarter Focus: Better handling of complex instructions and multi-step reasoning.
+- "Zero-Lag" Context Shifting: Instant adaptation to new document prompts.
+
+============================================================
+NOTE: V2 implementation will invalidate all V1 trained weights.
+============================================================
