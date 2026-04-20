@@ -60,37 +60,30 @@ class MultiScaleSSM(nn.Module):
         current_h = state if state is not None else \
                     torch.zeros(b, self.num_scales, self.d_model, self.d_state, device=device, dtype=dtype)
         
-        y_scales_list = []
-        h_surprise_list = []
+        from .ops.parallel_scan import selective_scan_dispatch
         
-        # We use a stable recurrent loop over L (fast enough for Phase 4)
-        for t in range(seq_len):
-            dt_t = dt_all_seq[:, t] # (b, scales, d)
-            B_t = B_all[:, t]       # (b, d, s)
-            x_t = x[:, t]           # (b, d)
-            C_t = C_all[:, t]       # (b, s)
-            
-            # dA = exp(dt * A): (b, scales, d, s)
-            dA = torch.exp(dt_t.unsqueeze(-1) * A.unsqueeze(0))
-            # dBx = (dt * B * x): (b, scales, d, s)
-            dBx = dt_t.unsqueeze(-1) * B_t.unsqueeze(1) * x_t.unsqueeze(1).unsqueeze(-1)
-            
-            # Recurrence: h_t = dA * h_{t-1} + dBx
-            current_h = dA * current_h + dBx
-            
-            # Surprise
-            h_mean = current_h.mean(dim=-1, keepdim=True)
-            h_std = torch.sqrt((current_h - h_mean).pow(2).mean(dim=-1) + 1e-6)
-            h_surprise_list.append(h_std.mean(dim=1)) # (b, d)
-            
-            # Output y_t = sum_k C_t h_{t,k}
-            # current_h: (b, scales, d, s), C_t: (b, s)
-            y_t = torch.einsum('bkds,bs->bkd', current_h, C_t) # Result: (b, scales, d)
-            y_scales_list.append(y_t)
-
-
-        y_scales = torch.stack(y_scales_list, dim=1) # (b, L, scales, d)
-        h_surprise_seq = torch.stack(h_surprise_list, dim=1)
+        # dA: (b, L, K, D, S), dBx: (b, L, K, D, S)
+        # We need to broadcast and compute dA and dBx for the whole sequence at once
+        # dt_all_seq: (b, L, K, D), A: (K, D, S)
+        dA = torch.exp(dt_all_seq.unsqueeze(-1) * A.unsqueeze(0).unsqueeze(0))
+        
+        # B_all: (b, L, D, S), x: (b, L, D)
+        dBx = dt_all_seq.unsqueeze(-1) * B_all.unsqueeze(2) * x.unsqueeze(2).unsqueeze(-1)
+        
+        # Parallel Selective Scan
+        h_all = selective_scan_dispatch(dA, dBx, state) # (b, L, K, D, S)
+        
+        # Surprise (Parallel)
+        # h_all: (b, L, K, D, S)
+        h_mean = h_all.mean(dim=-1, keepdim=True)
+        h_std = torch.sqrt((h_all - h_mean).pow(2).mean(dim=-1) + 1e-6)
+        h_surprise_seq = h_std.mean(dim=2) # (b, L, D) - Average over scales K
+        
+        # Output y_t = sum_k C_all h_{k}
+        # h_all: (b, L, K, D, S), C_all: (b, L, S)
+        y_scales = torch.einsum('blkds,bls->blkd', h_all, C_all) # (b, L, K, D)
+        
+        current_h = h_all[:, -1] # Last state for next step
         
         y_out = y_scales.view(b, seq_len, -1)
         y_final = self.out_proj(y_out) + x * self.D
