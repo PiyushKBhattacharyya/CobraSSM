@@ -162,6 +162,17 @@ def run_needle_test():
 
 # --- STRESS TEST ADD-ONS ---
 
+class SimpleTokenizer:
+    """Mock tokenizer for models with small vocab (like the PoC checkpoint)."""
+    def __init__(self, vocab_size=100):
+        self.vocab_size = vocab_size
+    def encode(self, text, **kwargs):
+        return [ord(c) % (self.vocab_size - 10) + 5 for c in text]
+    def decode(self, ids):
+        return "".join([chr(i) if i < self.vocab_size else "[?]" for i in ids])
+    def __len__(self):
+        return self.vocab_size
+
 def create_multi_needle_haystack(tokenizer, context_length, num_needles, needles, query_pair):
     """
     Build a sequence: [filler] [needle 1] [filler] [needle 2] ... [SEP] [query]
@@ -205,26 +216,31 @@ def run_stress_test(args):
     print("=" * 60)
     
     # 1. Load Model & Config
-    tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
-    
-    try:
+    if args.use_mock:
+        tokenizer = SimpleTokenizer(100)
         config = CobraConfig.from_pretrained(args.checkpoint_dir)
-        model = CobraForCausalLM(config) # Initialize architecture
-        
-        # Vocab Check
-        if config.vocab_size != len(tokenizer):
-            print(f"WARN: Checkpoint vocab ({config.vocab_size}) != Tokenizer vocab ({len(tokenizer)}).")
-            print("Re-initializing embeddings for compatibility.")
-            config.vocab_size = len(tokenizer)
-            model = CobraForCausalLM(config)
-        else:
-            model = CobraForCausalLM.from_pretrained(args.checkpoint_dir)
-            print(f"Loaded trained model from {args.checkpoint_dir}")
+        model = CobraForCausalLM.from_pretrained(args.checkpoint_dir)
+        print(f"Loaded trained model (MOCK MODE) from {args.checkpoint_dir}")
+    else:
+        tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+        try:
+            config = CobraConfig.from_pretrained(args.checkpoint_dir)
+            model = CobraForCausalLM(config) # Initialize architecture
             
-    except Exception as e:
-        print(f"No valid checkpoint found at {args.checkpoint_dir}. Using architecture defaults.")
-        config = CobraConfig(vocab_size=len(tokenizer), d_model=128, n_layers=1, d_state=16, num_scales=4, num_slots=32)
-        model = CobraForCausalLM(config)
+            # Vocab Check
+            if config.vocab_size != len(tokenizer):
+                print(f"WARN: Checkpoint vocab ({config.vocab_size}) != Tokenizer vocab ({len(tokenizer)}).")
+                print("Re-initializing embeddings for compatibility.")
+                config.vocab_size = len(tokenizer)
+                model = CobraForCausalLM(config)
+            else:
+                model = CobraForCausalLM.from_pretrained(args.checkpoint_dir)
+                print(f"Loaded trained model from {args.checkpoint_dir}")
+                
+        except Exception as e:
+            print(f"No valid checkpoint found at {args.checkpoint_dir}. Using architecture defaults.")
+            config = CobraConfig(vocab_size=len(tokenizer), d_model=128, n_layers=1, d_state=16, num_scales=4, num_slots=32)
+            model = CobraForCausalLM(config)
     
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     model.to(device).eval()
@@ -294,6 +310,7 @@ if __name__ == "__main__":
     parser.add_argument("--context_length", type=int, default=1024, help="Context length for stress test")
     parser.add_argument("--num_needles", type=int, default=5, help="Number of needles for stress test")
     parser.add_argument("--visualize", action="store_true", default=False, help="Generate strike visualization plot")
+    parser.add_argument("--use_mock", action="store_true", default=False, help="Use 100-vocab simple tokenizer (for legacy checkpoints)")
     
     args = parser.parse_args()
     
