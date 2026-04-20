@@ -10,31 +10,13 @@ def pscan_selective_scan(dA, dBx, h0=None):
     h0: (b, K, D, S)
     Returns: h (b, L, K, D, S)
     """
-    b, L, K, D, S = dA.shape
-    device = dA.device
+    b, L, K, d, s = dA.shape
     
-    # We use the Log-Space prefix sum trick:
-    # h_t = exp(cumsum(log(dA))) * [h0 + cumsum(dBx * exp(-cumsum(log(dA))))]
-    
-    log_dA = torch.log(dA + 1e-9) # Stability epsilon
+    # h_t = exp(cum_log_dA) * [h0 + cumsum(dBx * exp(-cum_log_dA))]
+    log_dA = torch.log(dA.clamp(min=1e-9))
     cum_log_dA = torch.cumsum(log_dA, dim=1)
     
-    # Adjust for initial state
-    if h0 is not None:
-        # h0 is effectively dBx at t=-1 with dA=1
-        # To handle h0 correctly in a pure cumsum, we can prepend it or add it to the first term
-        # But a more stable way for recurrent state is:
-        # h_t = exp(cum_log_dA) * h0 + sum_{i=0}^t exp(cum_log_dA_t - cum_log_dA_i) * dBx_i
-        pass
-
-    # Efficient vectorized associative scan (simplified for now to log-space prefix sum)
-    # Note: For production, we'd use a more robust Blelloch scan if L is massive
-    
-    # Pre-compute exponential cumulative factors
     exp_cum_dA = torch.exp(cum_log_dA)
-    
-    # Compute the weighted sum of inputs
-    # term = dBx_t / exp_cum_dA_t
     term = dBx * torch.exp(-cum_log_dA)
     cum_term = torch.cumsum(term, dim=1)
     
@@ -45,16 +27,44 @@ def pscan_selective_scan(dA, dBx, h0=None):
         
     return h
 
-def selective_scan_dispatch(dA, dBx, h0=None):
+def chunked_selective_scan(dA, dBx, h0=None, chunk_size=1024):
     """
-    Hardware-aware dispatcher for Selective Scan.
+    Segmented parallel scan to save VRAM.
+    """
+    b, L, K, d, s = dA.shape
+    device = dA.device
+    dtype = dA.dtype
+    
+    if L <= chunk_size:
+        return pscan_selective_scan(dA, dBx, h0)
+    
+    h_list = []
+    curr_h0 = h0
+    
+    for i in range(0, L, chunk_size):
+        end = min(i + chunk_size, L)
+        dA_chunk = dA[:, i:end]
+        dBx_chunk = dBx[:, i:end]
+        
+        h_chunk = pscan_selective_scan(dA_chunk, dBx_chunk, curr_h0)
+        h_list.append(h_chunk)
+        
+        # Last state becomes h0 for next chunk
+        curr_h0 = h_chunk[:, -1]
+        
+    return torch.cat(h_list, dim=1)
+
+def selective_scan_dispatch(dA, dBx, h0=None, chunk_size=1024):
+    """
+    Hardware-aware dispatcher with memory-efficient chunking.
     """
     if torch.cuda.is_available():
         try:
             from .triton_scan import triton_selective_scan
+            # Triton kernel also benefits from internal chunking
             return triton_selective_scan(dA, dBx, h0)
         except ImportError:
-            return pscan_selective_scan(dA, dBx, h0)
+            return chunked_selective_scan(dA, dBx, h0, chunk_size)
     else:
-        # Default to PyTorch Parallel Scan (Works on MPS/CPU)
-        return pscan_selective_scan(dA, dBx, h0)
+        # Optimized for MPS/CPU memory limits
+        return chunked_selective_scan(dA, dBx, h0, chunk_size)
