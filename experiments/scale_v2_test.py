@@ -8,22 +8,21 @@ def scale_v2_audit():
     print("  COBRASSM LEVEL 2 AUDIT (~125M PARAMS)")
     print("=" * 60)
     
-    # 1. Configuration (Level 2: Full-Size Foundation Prototype)
+    # 1. Configuration (Level 2: 8GB-Safe Foundation Prototype)
     config = CobraConfig(
         vocab_size=50257, 
         d_model=768, 
-        num_hidden_layers=12,
-        d_state=64,
-        num_scales=8
+        num_hidden_layers=8,
+        d_state=32,
+        num_scales=4
     )
     
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    print(f"Initializing 125M model on {device}...")
+    print(f"Initializing 125M model in float16 on {device}...")
     
     start_init = time.time()
-    # Initialize in float16/bfloat16 if possible to save memory during audit
-    dtype = torch.float32 
-    model = CobraForCausalLM(config).to(device=device, dtype=dtype).eval()
+    # Using float16 is mandatory for 8GB RAM at this scale
+    model = CobraForCausalLM(config).to(device=device, dtype=torch.float16).eval()
     duration_init = time.time() - start_init
     
     # 2. Parameter Audit

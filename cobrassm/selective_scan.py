@@ -62,7 +62,7 @@ class MultiScaleSSM(nn.Module):
         
         from .ops.parallel_scan import selective_scan_dispatch
         
-        chunk_size = 1024
+        chunk_size = 512
         y_scales_list = []
         h_surprise_list = []
         curr_h = state if state is not None else \
