@@ -8,21 +8,22 @@ def scale_v2_audit():
     print("  COBRASSM LEVEL 2 AUDIT (~125M PARAMS)")
     print("=" * 60)
     
-    # 1. Configuration (Level 2: 8GB-Safe Foundation Prototype)
+    # 1. Configuration (Level 2: Full-Size Foundation Prototype)
     config = CobraConfig(
         vocab_size=50257, 
         d_model=768, 
-        num_hidden_layers=8,
-        d_state=32,
-        num_scales=4
+        num_hidden_layers=12,
+        d_state=64,
+        num_scales=8
     )
     
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    print(f"Initializing 125M model in float16 on {device}...")
+    print(f"Initializing 125M model on {device}...")
     
     start_init = time.time()
-    # Using float16 is mandatory for 8GB RAM at this scale
-    model = CobraForCausalLM(config).to(device=device, dtype=torch.float16).eval()
+    # Initialize in float16/bfloat16 if possible to save memory during audit
+    dtype = torch.float32 
+    model = CobraForCausalLM(config).to(device=device, dtype=dtype).eval()
     duration_init = time.time() - start_init
     
     # 2. Parameter Audit
@@ -50,11 +51,9 @@ def scale_v2_audit():
         _ = model(input_ids[:, :64])
         
     start_bench = time.time()
-    # Using autocast is a secondary safety layer for MPS dtype stability
     with torch.no_grad():
-        with torch.autocast(device_type="mps", dtype=torch.float16):
-            # The model uses the internal Chunked Parallel Scan automatically
-            _ = model(input_ids)
+        # The model uses the internal Chunked Parallel Scan automatically
+        _ = model(input_ids)
     
     if device.type == "mps":
         torch.mps.synchronize()

@@ -30,4 +30,4 @@ class EventDetector(nn.Module):
         h_feat = self.h_proj(h_surprise)
         combined = torch.cat([x_feat, h_feat], dim=-1)
         s_logit = self.scorer(combined)
-        return torch.sigmoid(s_logit).to(dtype=x.dtype)
+        return torch.sigmoid(s_logit)

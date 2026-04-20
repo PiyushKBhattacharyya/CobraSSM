@@ -23,13 +23,11 @@ class DifferentiableMemoryBuffer(nn.Module):
 
     @property
     def temp(self):
-        # Explicitly cast to half-precision if necessary to avoid MPS mismatches
-        return torch.exp(self.log_temp).to(dtype=self.kq_proj.weight.dtype)
+        return torch.exp(self.log_temp)
 
     @property
     def decay(self):
-        # Explicitly cast to half-precision if necessary to avoid MPS mismatches
-        return torch.sigmoid(self.decay_logit).to(dtype=self.kq_proj.weight.dtype)
+        return torch.sigmoid(self.decay_logit)
 
     def forward_batch(self, x, x_prev, S, memory_init=None):
         b, seq_len, d = x.shape

@@ -62,7 +62,7 @@ class MultiScaleSSM(nn.Module):
         
         from .ops.parallel_scan import selective_scan_dispatch
         
-        chunk_size = 512
+        chunk_size = 1024
         y_scales_list = []
         h_surprise_list = []
         curr_h = state if state is not None else \
@@ -79,12 +79,11 @@ class MultiScaleSSM(nn.Module):
             
             # Discretization for this chunk only
             # dA_chunk: (b, L_c, K, D, S)
-            # Explicitly cast to x.dtype to prevent MPS datatype mismatch errors
-            dA_chunk = torch.exp(dt_chunk.unsqueeze(-1) * A.unsqueeze(0).unsqueeze(0)).to(dtype=x.dtype)
-            dBx_chunk = (dt_chunk.unsqueeze(-1) * B_chunk.unsqueeze(2) * x_chunk.unsqueeze(2).unsqueeze(-1)).to(dtype=x.dtype)
+            dA_chunk = torch.exp(dt_chunk.unsqueeze(-1) * A.unsqueeze(0).unsqueeze(0))
+            dBx_chunk = dt_chunk.unsqueeze(-1) * B_chunk.unsqueeze(2) * x_chunk.unsqueeze(2).unsqueeze(-1)
             
             # Parallel Scan for this chunk
-            h_chunk = selective_scan_dispatch(dA_chunk, dBx_chunk, curr_h).to(dtype=x.dtype)
+            h_chunk = selective_scan_dispatch(dA_chunk, dBx_chunk, curr_h) # (b, L_c, K, D, S)
             
             # Surprise (Chunk)
             h_mean = h_chunk.mean(dim=-1, keepdim=True)
