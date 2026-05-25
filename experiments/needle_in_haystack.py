@@ -6,7 +6,11 @@ then queries the model to retrieve it. Tests retrieval accuracy across
 multiple context lengths and needle depths.
 """
 import torch
+import torch.nn as nn
 import time
+import argparse
+import matplotlib.pyplot as plt
+import numpy as np
 from transformers import GPT2Tokenizer
 from cobrassm import CobraConfig, CobraForCausalLM
 
@@ -156,5 +160,161 @@ def run_needle_test():
     print("=" * 60)
 
 
+# --- STRESS TEST ADD-ONS ---
+
+class SimpleTokenizer:
+    """Mock tokenizer for models with small vocab (like the PoC checkpoint)."""
+    def __init__(self, vocab_size=100):
+        self.vocab_size = vocab_size
+    def encode(self, text, **kwargs):
+        return [ord(c) % (self.vocab_size - 10) + 5 for c in text]
+    def decode(self, ids):
+        return "".join([chr(i) if i < self.vocab_size else "[?]" for i in ids])
+    def __len__(self):
+        return self.vocab_size
+
+def create_multi_needle_haystack(tokenizer, context_length, num_needles, needles, query_pair):
+    """
+    Build a sequence: [filler] [needle 1] [filler] [needle 2] ... [SEP] [query]
+    Each needle is a (key, value) pair.
+    """
+    SEP_ID = 1
+    
+    # Reserve space for query and SEP
+    query_ids = tokenizer.encode(query_pair[0])
+    total_needle_ids = []
+    for k, v in needles:
+        total_needle_ids.extend(tokenizer.encode(f" {k} is {v}. "))
+    
+    filler_needed = context_length - len(total_needle_ids) - len(query_ids) - 1
+    if filler_needed < 0:
+        raise ValueError(f"Context length {context_length} too short for {num_needles} needles")
+    
+    # Filler
+    filler_text = " The weather is neutral. "
+    filler_unit = tokenizer.encode(filler_text)
+    full_filler = (filler_unit * (filler_needed // len(filler_unit) + 1))[:filler_needed]
+    
+    # Interleave needles into filler
+    segment_len = len(full_filler) // (num_needles + 1)
+    sequence = []
+    curr_filler = 0
+    for i in range(num_needles):
+        sequence.extend(full_filler[curr_filler : curr_filler + segment_len])
+        sequence.extend(tokenizer.encode(f" {needles[i][0]} is {needles[i][1]}. "))
+        curr_filler += segment_len
+    
+    sequence.extend(full_filler[curr_filler:])
+    sequence.append(SEP_ID)  # Hard Read Gate trigger
+    sequence.extend(query_ids)
+    
+    return torch.tensor([sequence[:context_length]])
+
+def run_stress_test(args):
+    print("=" * 60)
+    print("  COBRASSM MEMORY STRESS TEST (MULTI-NEEDLE)")
+    print("=" * 60)
+    
+    # 1. Load Model & Config
+    if args.use_mock:
+        tokenizer = SimpleTokenizer(100)
+        config = CobraConfig.from_pretrained(args.checkpoint_dir)
+        model = CobraForCausalLM.from_pretrained(args.checkpoint_dir)
+        print(f"Loaded trained model (MOCK MODE) from {args.checkpoint_dir}")
+    else:
+        tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+        try:
+            config = CobraConfig.from_pretrained(args.checkpoint_dir)
+            model = CobraForCausalLM(config) # Initialize architecture
+            
+            # Vocab Check
+            if config.vocab_size != len(tokenizer):
+                print(f"WARN: Checkpoint vocab ({config.vocab_size}) != Tokenizer vocab ({len(tokenizer)}).")
+                print("Re-initializing embeddings for compatibility.")
+                config.vocab_size = len(tokenizer)
+                model = CobraForCausalLM(config)
+            else:
+                model = CobraForCausalLM.from_pretrained(args.checkpoint_dir)
+                print(f"Loaded trained model from {args.checkpoint_dir}")
+                
+        except Exception as e:
+            print(f"No valid checkpoint found at {args.checkpoint_dir}. Using architecture defaults.")
+            config = CobraConfig(vocab_size=len(tokenizer), d_model=128, n_layers=1, d_state=16, num_scales=4, num_slots=32)
+            model = CobraForCausalLM(config)
+    
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    model.to(device).eval()
+    
+    # 2. Setup Multi-Needle Data
+    all_facts = [
+        ("alpha", "red"), ("beta", "blue"), ("gamma", "green"), ("delta", "yellow"),
+        ("epsilon", "cyan"), ("zeta", "magenta"), ("eta", "black"), ("theta", "white"),
+        ("iota", "gray"), ("kappa", "orange"), ("lambda", "purple"), ("mu", "brown")
+    ]
+    
+    num_facts = min(args.num_needles, len(all_facts))
+    needles = all_facts[:num_facts]
+    query_idx = num_facts // 2 
+    target_key, target_val = needles[query_idx]
+    query_text = f" What is the color of {target_key}?"
+    target_ids = tokenizer.encode(target_val, add_special_tokens=False)
+    
+    print(f"Inserting {num_facts} facts. Querying for '{target_key}' (Target: '{target_val}').")
+    
+    # 3. Execution
+    input_ids = create_multi_needle_haystack(
+        tokenizer, args.context_length, num_facts, needles, (query_text, target_val)
+    ).to(device)
+    
+    strike_scores = []
+    def hook_fn(module, input, output):
+        strike_scores.append(output.detach().cpu().numpy())
+    
+    handle = model.cobra.blocks[0].event_detector.register_forward_hook(hook_fn)
+    
+    start_time = time.time()
+    with torch.no_grad():
+        outputs = model(input_ids)
+        pred_id = torch.argmax(outputs.logits[0, -1]).item()
+        
+    duration = time.time() - start_time
+    handle.remove()
+    
+    # 4. Results
+    pred_val = tokenizer.decode([pred_id]) if pred_id < len(tokenizer) else "[UNK]"
+    success = (pred_id == target_ids[0])
+    
+    print(f"\nContext Length: {input_ids.shape[1]}")
+    print(f"Prediction: '{pred_val}' (Actual: '{target_val}')")
+    print(f"Status: {'[PASS]' if success else '[FAIL]'}")
+    print(f"Latency: {duration:.4f}s")
+    
+    # 5. Visualization
+    if args.visualize and len(strike_scores) > 0:
+        S = strike_scores[0][0, :, 0]
+        plt.figure(figsize=(15, 5))
+        plt.plot(S, label="Strike Score (S_t)")
+        plt.axhline(y=0.5, color='r', linestyle='--', alpha=0.3)
+        plt.title(f"CobraSSM Event Detector Activation (L={args.context_length})")
+        plt.xlabel("Token Position")
+        plt.ylabel("Strike Score")
+        plt.grid(True, alpha=0.2)
+        plt.savefig("strike_visualization.png")
+        print("\nStrike Visualization saved to 'strike_visualization.png'")
+
+
 if __name__ == "__main__":
-    run_needle_test()
+    parser = argparse.ArgumentParser(description="CobraSSM Needle-in-a-Haystack & Stress Test")
+    parser.add_argument("--mode", type=str, default="original", choices=["original", "stress"], help="Test mode")
+    parser.add_argument("--checkpoint_dir", type=str, default="./cobra_trained", help="Path to model weights")
+    parser.add_argument("--context_length", type=int, default=1024, help="Context length for stress test")
+    parser.add_argument("--num_needles", type=int, default=5, help="Number of needles for stress test")
+    parser.add_argument("--visualize", action="store_true", default=False, help="Generate strike visualization plot")
+    parser.add_argument("--use_mock", action="store_true", default=False, help="Use 100-vocab simple tokenizer (for legacy checkpoints)")
+    
+    args = parser.parse_args()
+    
+    if args.mode == "original":
+        run_needle_test()
+    else:
+        run_stress_test(args)

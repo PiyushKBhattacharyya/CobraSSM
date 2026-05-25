@@ -20,17 +20,11 @@ class EventDetector(nn.Module):
             nn.Linear(d_model // 4, 1)
         )
 
-    def forward(self, x_t, h_surprise_t):
-        """Single step fallback."""
-        x_feat = self.x_proj(x_t)
-        h_feat = self.h_proj(h_surprise_t)
-        combined = torch.cat([x_feat, h_feat], dim=-1)
-        return torch.sigmoid(self.scorer(combined))
-
-    def forward_sequence(self, x, h_surprise, input_ids=None):
+    def forward(self, x, h_surprise, input_ids=None):
         """
-        x: (batch, L, d_model)
-        h_surprise: (batch, L, d_model)
+        Standard PyTorch entry point. Handles both:
+        - Single step: x (b, d), h_surprise (b, d)
+        - Sequence: x (b, L, d), h_surprise (b, L, d)
         """
         x_feat = self.x_proj(x)
         h_feat = self.h_proj(h_surprise)

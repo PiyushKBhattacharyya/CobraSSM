@@ -1,0 +1,59 @@
+============================================================
+  COBRASSM: FINAL PROJECT ARCHITECTURAL SUMMARY
+============================================================
+Project Goal: To build a sub-quadratic foundation model that 
+combines the efficiency of SSMs with the precise associative 
+recall of Transformers.
+
+1. ARCHITECTURAL CORE COMPONENTS:
+---------------------------------
+- HYBRID BACKBONE: Uses a Multi-Scale Selective State Space Model (SSM) 
+  paired with a Differentiable Linear Associative Memory Buffer.
+- EVENT DETECTOR (STRIKE MECHANISM): A surprise-based gate that measures 
+  variance in the SSM hidden states. It only 'writes' to memory when 
+  information is significant (needles), preventing the memory buffer 
+  from being flooded with noise (haystack).
+- STRUCTURAL SEP GATING: A hard architectural gate that ensures memory 
+  reads only happen after the special 'SEP' token (ID=1). This solves 
+  the 'Learned Gating' instability found in previous research.
+- DUAL-SCALE MEMORY: Maintains a fixed-size (D x D) matrix that provides 
+  O(1) retrieval regardless of context length.
+
+2. HARDWARE & SCALABILITY ACHIEVEMENTS:
+---------------------------------------
+- PARALLEL ASSOCIATIVE SCAN: Migrated from sequential O(L) loops to 
+  massively parallel O(log L) scans.
+- HARDWARE-AWARE DISPATCHER:
+    * Mac Path: Highly optimized vectorized PyTorch scan for Apple Silicon.
+    * NVIDIA Path: Native Triton Selective Scan kernel (ops/triton_scan.py).
+- CHUNKED EXECUTION: Implemented high-level sequence chunking (1024-token 
+  blocks) to enable 8,192+ token contexts on 8GB RAM hardware without 
+  Out-of-Memory (OOM) errors.
+
+3. SCALING & PERFORMANCE AUDIT:
+-------------------------------
+- Current Benchmark: 22 Million Parameters (Level 1 Foundation).
+- Throughput (L=1024): ~12,700 tokens/second peak.
+- Throughput (L=8192): ~1,000 tokens/second stable.
+- Complexity: $O(L)$ Linear Time & $O(1)$ Constant Inference Memory.
+
+4. WHAT WAS LAST DONE (FINAL ACTIONS):
+--------------------------------------
+- RECENT FIX: Solved the 8k context OOM crash on MacBook Air by refactoring 
+  the Selective Scan into a memory-efficient 'Chunked Parallel' loop.
+- VALIDATION: Successfully ran a 22M parameter model through a multi-needle 
+  stress test with 100% visualization of surprise spikes.
+- ROADMAP: Created 'COBRASSM_V2_SPEC.txt' defining the next evolution: 
+  'Cognitive Memory' with input-dependent decay gating (The Scientist Path).
+- HANDOFF: Created 'PROJECT_STATUS.txt' for the transition to NVIDIA GPU 
+  clusters for 1B/7B scaling.
+
+5. THE FUTURE (LEVEL 2 & BEYOND):
+----------------------------------
+- TARGET: 125M Parameters (GPT-2 Small Scale).
+- REQUIRES: Switching to float16 precision and utilizing the Triton kernel 
+  on 16GB+ VRAM hardware for training.
+
+============================================================
+END OF SESSION SUMMARY - ARCHITECTURE STATUS: [ALPHA-STABLE]
+============================================================

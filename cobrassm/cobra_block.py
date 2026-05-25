@@ -82,7 +82,7 @@ class CobraBlock(nn.Module):
         y_ssm, ssm_seq, next_ssm_state = self.ssm(x_norm, state=ssm_state, bidirectional=bidirectional)
 
         # 2. Event Detection (Full sequence)
-        S = self.event_detector.forward_sequence(x_norm, ssm_seq, input_ids)
+        S = self.event_detector(x_norm, ssm_seq, input_ids)
 
         # 3. Differentiable Memory Path (Vectorized)
         # Shifted input for key generation

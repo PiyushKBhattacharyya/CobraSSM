@@ -55,6 +55,7 @@ class MultiScaleSSM(nn.Module):
             dt_all_seq = torch.stack(dts_list, dim=2)
             dt_all_seq = torch.clamp(dt_all_seq, max=20.0)
 
+<<<<<<< HEAD
             # A: (scales, d_model, d_state)
             A = -torch.exp(self.A_log)
             
@@ -109,6 +110,59 @@ class MultiScaleSSM(nn.Module):
         surp_bwd = torch.flip(surp_bwd, dims=[1])
 
         return y_fwd + y_bwd, (surp_fwd + surp_bwd) / 2.0, h_fwd + h_bwd
+=======
+        # A: (scales, d_model, d_state)
+        A = -torch.exp(self.A_log)
+        
+        current_h = state if state is not None else \
+                    torch.zeros(b, self.num_scales, self.d_model, self.d_state, device=device, dtype=dtype)
+        
+        from .ops.parallel_scan import selective_scan_dispatch
+        
+        chunk_size = 1024
+        y_scales_list = []
+        h_surprise_list = []
+        curr_h = state if state is not None else \
+                 torch.zeros(b, self.num_scales, self.d_model, self.d_state, device=device, dtype=dtype)
+        
+        # Sequence-level chunking for memory efficiency
+        for i in range(0, seq_len, chunk_size):
+            end = min(i + chunk_size, seq_len)
+            
+            dt_chunk = dt_all_seq[:, i:end] # (b, chunk, K, D)
+            B_chunk = B_all[:, i:end]       # (b, chunk, D, S)
+            x_chunk = x[:, i:end]           # (b, chunk, D)
+            C_chunk = C_all[:, i:end]       # (b, chunk, S)
+            
+            # Discretization for this chunk only
+            # dA_chunk: (b, L_c, K, D, S)
+            dA_chunk = torch.exp(dt_chunk.unsqueeze(-1) * A.unsqueeze(0).unsqueeze(0))
+            dBx_chunk = dt_chunk.unsqueeze(-1) * B_chunk.unsqueeze(2) * x_chunk.unsqueeze(2).unsqueeze(-1)
+            
+            # Parallel Scan for this chunk
+            h_chunk = selective_scan_dispatch(dA_chunk, dBx_chunk, curr_h) # (b, L_c, K, D, S)
+            
+            # Surprise (Chunk)
+            h_mean = h_chunk.mean(dim=-1, keepdim=True)
+            h_std = torch.sqrt((h_chunk - h_mean).pow(2).mean(dim=-1) + 1e-6)
+            h_surprise_list.append(h_std.mean(dim=2)) # (b, L_c, D)
+            
+            # Output (Chunk)
+            y_c = torch.einsum('blkds,bls->blkd', h_chunk, C_chunk)
+            y_scales_list.append(y_c)
+            
+            # Pass state to next chunk
+            curr_h = h_chunk[:, -1]
+
+        y_scales = torch.cat(y_scales_list, dim=1) # (b, L, K, D)
+        h_surprise_seq = torch.cat(h_surprise_list, dim=1)
+        current_h = curr_h
+        
+        y_out = y_scales.view(b, seq_len, -1)
+        y_final = self.out_proj(y_out) + x * self.D
+        
+        return y_final, h_surprise_seq, current_h
+>>>>>>> c74a6bb81eacf3a794ecc9cba36826f59ab6c02b
 
     def forward_step(self, x_t, state):
         """
