@@ -1,6 +1,6 @@
 # Goal Description
 
-Design and implement **CobraSSM**, a novel sequence model combining a Selective State Space Model (SSM) backbone with an event-driven sparse attention mechanism ("strike mechanism") and a structured read-write memory buffer. This model is designed to maintain linear time complexity $O(n)$ while achieving strong long-context understanding, exact token recall, and improved stability over architectures like Mamba.
+Design and implement **CobraSSM**, a unified novel sequence model combining a Selective State Space Model (SSM) backbone with an event-driven sparse attention mechanism ("strike mechanism") and a structured read-write memory buffer. This architecture serves **dual goals**: maintaining linear time complexity $O(n)$ for strong long-context language modeling, and functioning as a highly efficient **YOLO-alternative for real-time vision and object detection**.
 
 ## User Review Required
 
@@ -26,18 +26,25 @@ Design and implement **CobraSSM**, a novel sequence model combining a Selective 
 ### 4. Dual-Path Fusion and Residual Stability
 - **Fusion Logic**: $y_{block} = y^{ssm} + \sigma(\text{FusionGate}) \odot \text{Linear}(y^{mem})$.
 - **Residual Path**: Retains the strictly residual $x + \text{Block}(x)$ design for depth stability.
+### 5. Vision Adaptation: Cobra-YOLO (Object Detection)
+To serve as a YOLO alternative, the architecture adapts the SSM and memory for 2D visual data:
+- **Patchification & Multi-Directional Scan**: Images are divided into patches (e.g., 16x16). The 1D SSM scan is made bidirectional or uses multi-directional sweeps (e.g., zig-zag, 4-way) to capture non-causal 2D spatial context.
+- **Memory as Object Slots**: The Differentiable Memory Buffer acts as dynamic "object slots", accumulating global context and interacting with spatial features to track objects across the image.
+- **Detection Head**: The output sequence is un-flattened back into a 2D spatial grid, feeding into a lightweight YOLO-style detection head (predicting bounding boxes, objectness, and class probabilities per grid cell).
+- **Unified Backbone**: The core `CobraSSMBlock` remains identical for both text and vision, with only the embedding (text vs. patch) and head (LM vs. YOLO) swapped.
 
 ## PyTorch Implementation Strategy
 
 We will structure the PyTorch implementation into modular components under `d:\Projects\CobraSSM`.
 
 ### Components
-- **[selective_scan.py](file:///d:/Projects/CobraSSM/selective_scan.py)**: Contains the efficient parallel scan or chunk-wise recurrent mechanism for the SSM.
-- **[event_detector.py](file:///d:/Projects/CobraSSM/event_detector.py)**: Implements the lightweight scoring function and the trigger logic for read/write.
+- **[selective_scan.py](file:///d:/Projects/CobraSSM/selective_scan.py)**: Contains the efficient parallel scan. Will be updated to support bidirectional/multi-directional scans for vision.
+- **[event_detector.py](file:///d:/Projects/CobraSSM/event_detector.py)**: Implements the lightweight scoring function and trigger logic.
 - **[memory_buffer.py](file:///d:/Projects/CobraSSM/memory_buffer.py)**: Manages the bounded KV buffer states across steps/chunks.
-- **`strike_attention.py`**: Handles the cross-attention between token queries and the memory buffer.
-- **[cobra_block.py](file:///d:/Projects/CobraSSM/cobra_block.py)**: Combines [SSM](file:///d:/Projects/CobraSSM/cobrassm/model.py#5-65), `Memory`, `Attention`, and `EventDetector` into a unified `CobraSSMBlock`. Incorporates SwiGLU feed-forward networks (if utilized) and RMSNorm.
-- **[model.py](file:///d:/Projects/CobraSSM/model.py)**: The overarching language model class containing embeddings, $L$ blocks, and the language modeling head.
+- **`strike_attention.py`**: Handles cross-attention between token/patch queries and the memory buffer.
+- **[cobra_block.py](file:///d:/Projects/CobraSSM/cobra_block.py)**: Unified `CobraSSMBlock` for both modalities (Language and Vision).
+- **[model.py](file:///d:/Projects/CobraSSM/model.py)**: Overarching language model wrapper (`CobraForCausalLM`).
+- **`vision_model.py` (NEW)**: YOLO-alternative wrapper (`CobraForObjectDetection`), including Patch Embeddings and the YOLO Detection Head.
 
 ### Constraints & Considerations
 - **$O(n)$ Complexity**: By restricting attention to a fixed-size buffer ($M$), the attention cost per token is $O(M)$, making the total process $O(nM)$ (effectively linear W.R.T sequence length).
@@ -54,13 +61,14 @@ We will structure the PyTorch implementation into modular components under `d:\P
 ## Evaluation Plan
 
 ### Baselines
-- Transformer Baseline (Standard Causal self-attention, e.g., GPT-2/Llama architecture)
-- Mamba Backbone Baseline (Pure S6 architecture)
+- **Language**: Transformer (GPT-2/Llama) and Mamba (Pure S6).
+- **Vision**: YOLOv8 (for real-time object detection) and Vision Mamba / ViT (for backbone efficiency).
 
 ### Tasks
-1. **Long Sequence Modeling**: Perplexity drops on long-context datasets (e.g., PG-19 or extended language modeling datasets).
-2. **Copy / Induction Tasks**: Synthetic tasks requiring exact token recall (e.g., synthetic associative recall masks, repeating sequences). This specifically stresses the memory limit of pure SSMs.
-3. **Standard Language Modeling**: Zero-shot evaluations to ensure foundational reasoning has not degraded.
+1. **Long Sequence Modeling**: Perplexity drops on long-context datasets.
+2. **Copy / Induction Tasks**: Synthetic tasks requiring exact token recall.
+3. **Standard Language Modeling**: Zero-shot evaluations.
+4. **Real-Time Object Detection (COCO)**: Bounding box mAP and inference FPS compared to YOLOv8. Evaluates the multi-directional SSM and object slot memory.
 
 ---
 

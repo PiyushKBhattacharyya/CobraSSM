@@ -70,7 +70,7 @@ class CobraBlock(nn.Module):
         self.mlp_up   = nn.Linear(d_model, d_model * 4 * 2)
         self.mlp_down = nn.Linear(d_model * 4, d_model)
 
-    def forward(self, x, ssm_state=None, mem_state=None, input_ids=None):
+    def forward(self, x, ssm_state=None, mem_state=None, input_ids=None, bidirectional=False):
         """
         x         : (batch, seq_len, d_model)
         input_ids : (batch, seq_len) int64
@@ -79,7 +79,7 @@ class CobraBlock(nn.Module):
         x_norm = self.norm_ssm(x)
 
         # 1. Multi-Scale SSM path (Vectorized)
-        y_ssm, ssm_seq, next_ssm_state = self.ssm(x_norm, state=ssm_state)
+        y_ssm, ssm_seq, next_ssm_state = self.ssm(x_norm, state=ssm_state, bidirectional=bidirectional)
 
         # 2. Event Detection (Full sequence)
         S = self.event_detector.forward_sequence(x_norm, ssm_seq, input_ids)
