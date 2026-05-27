@@ -92,3 +92,40 @@ To ensure immediate usability and simplified evaluation.
 - **Configuration**: Create `CobraConfig` inheriting from `PretrainedConfig`.
 - **Model Wrapper**: Create `CobraForCausalLM` inheriting from `PreTrainedModel`.
 - **Testing**: Ensure model weights can be saved and reloaded using the standard `.save_pretrained()` and `AutoModelForCausalLM.from_pretrained()` API paradigm.
+
+---
+
+## Phase 3: Ablation Study & YOLO Benchmark
+
+To rigorously evaluate the Cobra-YOLO architecture, we will conduct an ablation study against a pretrained YOLOv8 model using the VisDrone dataset.
+
+Based on user selection, we are pursuing **Option C (Full Training)**: we will implement a full training pipeline for Cobra-YOLO on the training split from scratch, and then perform a fair mAP comparison against the pretrained YOLOv8 baseline, along with resource efficiency metrics.
+
+### 1. Dataset & Environment Setup
+- **Dataset**: VisDrone2019-DET (using Hugging Face datasets streaming or download).
+- **Format**: Dynamic scaling of images to 224x224 (to match patch grid). Bounding boxes normalized to `[x_center, y_center, width, height]` relative to image size.
+- **Baseline**: Pretrained YOLOv8n from the `ultralytics` package.
+
+### 2. Training Pipeline (`train_visdrone.py`)
+- **Loss Function**: Custom YOLO-style multi-task loss containing:
+  - **CIoU/GIoU Bounding Box Regression Loss** (or standard L1/Smooth L1 loss on box coords).
+  - **Binary Cross-Entropy (BCE) Loss** for Objectness prediction.
+  - **Cross-Entropy/BCE Loss** for Multi-class classification.
+- **Optimization**: AdamW optimizer, Cosine Annealing learning rate scheduler.
+- **Target**: Train Cobra-YOLO model to convergence on a representative training subset/split.
+
+### 3. Ablation & Benchmarking (`benchmark_ablation.py`)
+We will measure:
+- **Accuracy (mAP@0.5 and mAP@0.5:0.95)**: Computed on the VisDrone val split for both fully-trained Cobra-YOLO and YOLOv8.
+- **Inference Throughput (FPS)**: Average frames-per-second processed across batch sizes of 1, 4, 16.
+- **Parameter Efficiency**: Total count of trainable parameters.
+- **GPU Peak Memory**: Scaling of memory consumption with batch size.
+
+## Verification Plan
+
+### Automated Tests
+- Run `python experiments/train_visdrone.py` to verify training steps execute without tensor shape mismatches or loss divergence.
+- Run `python experiments/benchmark_ablation.py` to execute the full evaluation suite and print the comparison table.
+
+### Manual Verification
+- Review the generated performance comparison table, checking that FPS, parameter count, and mAP metrics are properly computed and logged.

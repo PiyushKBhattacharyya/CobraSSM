@@ -2,29 +2,34 @@
   COBRASSM V2: THE COGNITIVE REFINEMENT SPEC
 ============================================================
 Code Name: "Iron Cobra"
-Status: Design Draft (Phase: The Scientist Path)
+Status: Design Draft (Phase: The Scientist Path - Multi-Modal)
 
 1. THE V2 VISION
 -----------------
-The goal of V2 is to transition from a "Passive Storage" model to an "Active Cognitive" model. In V1, the model remembers everything equally until it fades. In V2, the model chooses exactly WHAT to forget and WHEN to forget it.
+The goal of V2 is to transition from a "Passive Storage" model to an "Active Cognitive" model across both Language and Vision domains. In V1, the model remembers everything equally until it decays. In V2, the model chooses exactly WHAT to forget, WHEN to forget it, and WHERE to locate it in 2D space.
+
+For vision tasks like VisDrone object detection, this means tracking dense, small objects dynamically as they sweep through patch scans.
 
 2. KEY ARCHITECTURAL UPGRADES:
 ------------------------------
 
-A. DYNAMIC DECAY GATING (The "Eraser")
+A. DYNAMIC DECAY GATING & SPATIAL ERASER
    - OLD: Memory decays at a fixed rate (e.g., 0.95 every step).
-   - NEW: The model has a 'Decay Gate' -- lambda_t = sigmoid(W_decay * x_t).
-   - WHY: If the model finishes a sentence and starts a new topic, it can 'erase' the old sentence from the memory buffer instantly to prevent noise and confusion.
+   - NEW: Learnable input-dependent decay gate -- lambda_t = sigmoid(W_decay * x_t).
+   - WHY (Language): Instantly wipes out obsolete context (e.g., at sentence boundaries) to prevent noise.
+   - WHY (Vision/VisDrone): As the scan transitions from high-density foreground (drones, vehicles) to flat background (sky, roads), it erases background features to free up object slots.
 
-B. SSM-MEMORY FUSION (The "Awareness")
-   - OLD: The Memory Buffer only knows about the current word (x_t).
-   - NEW: The Memory Buffer is fed the 'Surprise' signal (h_std) from the SSM.
-   - WHY: This allows the memory to index facts based on context. If the SSM says "This word is shocking!", the memory writes it with 5x more strength.
+B. SSM-MEMORY FUSION & SPATIAL SALIENCY ("Awareness")
+   - OLD: The Memory Buffer only knows about the current token or patch (x_t).
+   - NEW: Memory Buffer is fed the 'Surprise' signal (h_std) representing spatial variance.
+   - WHY (Language): Boosts writing strength 5x on unexpected or critical tokens.
+   - WHY (Vision/VisDrone): Tiny objects and sudden contours trigger massive local spatial surprise in the Multi-Scale SSM. The memory intercepts this surprise and reinforces the representation of small objects (needles in the visual haystack).
 
-C. REFINED KEY/QUERY PROJECTION
-   - OLD: Simple linear projection.
-   - NEW: Multi-Head Memory Projections (similar to Transformer Multi-Head Attention, but for the associative matrix).
-   - WHY: Allows the model to store multiple independent associations in the same matrix (e.g., one head for 'names', one head for 'color results').
+C. REFINED KEY/QUERY PROJECTION & MULTI-HEAD SPATIAL SLOTS
+   - OLD: Simple linear projection mapping patches to a single memory matrix.
+   - NEW: Multi-Head Memory Projections (creating independent associative heads).
+   - WHY (Language): Stores multiple semantic relationships simultaneously.
+   - WHY (Vision/VisDrone): VisDrone contains highly heterogeneous object classes (pedestrians, cars, bicycles, vans). Multi-head slots allow the model to dedicate specific memory heads to distinct scales (e.g., micro-objects vs. macro-structures) and aspect ratios.
 
 3. MATHEMATICAL EVOLUTION:
 --------------------------
@@ -34,13 +39,13 @@ Current Recurrence:
 V2 Recurrence (Proposed):
   M[t] = Gate(x[t]) * M[t-1] + S[t] * (v @ k)
   
-  Where Gate(x[t]) is a learned vector that decides which 'channels' of memory to preserve or delete.
+  Where Gate(x[t]) is a learned vector deciding which channels/spatial dimensions of memory to preserve or clear.
 
 4. EXPECTED BREAKTHROUGHS:
 ---------------------------
 - Higher Associative Accuracy: Should pass 'Needle in Haystack' tests at 32k+ tokens with 99% accuracy.
-- Smarter Focus: Better handling of complex instructions and multi-step reasoning.
-- "Zero-Lag" Context Shifting: Instant adaptation to new document prompts.
+- Robust Object Tracking: Substantially higher mAP@0.5 on small, dense objects in drone photography (VisDrone dataset).
+- Efficiency: Zero-lag context shifting in multi-view images.
 
 ============================================================
 NOTE: V2 implementation will invalidate all V1 trained weights.

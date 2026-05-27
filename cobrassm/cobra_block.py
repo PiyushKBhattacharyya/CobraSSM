@@ -92,7 +92,7 @@ class CobraBlock(nn.Module):
         ], dim=1)
         
         x_mem_in = self.norm_mem(x)
-        M_seq, next_mem_state = self.memory.forward_batch(x_mem_in, x_prev, S, memory_init=mem_state)
+        M_seq, next_mem_state = self.memory.forward_batch(x_mem_in, x_prev, S, ssm_seq, memory_init=mem_state)
 
         # 4. Gated Read
         y_mem_raw = self.memory.read_buffer_batch(x_mem_in, M_seq)
@@ -142,7 +142,7 @@ class CobraBlock(nn.Module):
 
         # 3. Memory write step
         x_mem_in = self.norm_mem(x_t)[:, 0]     # (b, d)
-        new_mem = self.memory.forward_step(x_mem_in, x_prev_emb, S[:, 0], mem_state)
+        new_mem = self.memory.forward_step(x_mem_in, x_prev_emb, S[:, 0], mem_state, h_surprise[:, 0])
 
         # 4. Memory read
         y_mem_raw = self.memory.read_buffer(x_mem_in, new_mem)  # (b, d)
