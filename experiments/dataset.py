@@ -222,3 +222,91 @@ class ExcavatorsCOCODataset(UnifiedObjectDetectionDataset):
         grid_obj, grid_bbox, grid_class = self.construct_grid_target(bboxes, classes)
         
         return img_tensor, grid_obj, grid_bbox, grid_class, img_path
+
+class UAVDTDataset(UnifiedObjectDetectionDataset):
+    def __init__(self, root_dir, split="train", img_size=224, grid_size=14, num_classes=3, augment=False):
+        super().__init__(img_size, grid_size, num_classes, augment)
+        self.root_dir = root_dir
+        self.img_root = os.path.join(root_dir, "UAV-benchmark-M")
+        self.gt_root = os.path.join(root_dir, "UAV-benchmark-MOTD_v1.0", "GT")
+        
+        # Get and split sequences
+        all_sequences = sorted([d for d in os.listdir(self.img_root) if os.path.isdir(os.path.join(self.img_root, d))])
+        
+        if split == "train":
+            # 33 sequences for training
+            self.sequences = [seq for i, seq in enumerate(all_sequences) if i % 3 != 0]
+        else:
+            # 17 sequences for validation
+            self.sequences = [seq for i, seq in enumerate(all_sequences) if i % 3 == 0]
+            
+        self.samples = []
+        self.annotations = {}
+        
+        # Pre-load annotations for fast indexing
+        for seq in self.sequences:
+            gt_file = os.path.join(self.gt_root, f"{seq}_gt_whole.txt")
+            self.annotations[seq] = {}
+            if os.path.exists(gt_file):
+                with open(gt_file, "r") as f:
+                    for line in f:
+                        parts = [p.strip() for p in line.split(",") if p.strip()]
+                        if len(parts) >= 9:
+                            frame_idx = int(parts[0])
+                            # bbox: left, top, width, height
+                            bbox = [float(parts[2]), float(parts[3]), float(parts[4]), float(parts[5])]
+                            cat = int(parts[8])
+                            
+                            # Only keep category 2 (truck)
+                            if cat == 2:
+                                if frame_idx not in self.annotations[seq]:
+                                    self.annotations[seq][frame_idx] = []
+                                self.annotations[seq][frame_idx].append(bbox)
+                                
+            # List all images in sequence
+            seq_img_dir = os.path.join(self.img_root, seq)
+            img_paths = sorted(glob.glob(os.path.join(seq_img_dir, "*.jpg")))
+            for p in img_paths:
+                frame_idx = int(os.path.basename(p)[3:9])
+                self.samples.append((p, seq, frame_idx))
+                
+    def __len__(self):
+        return len(self.samples)
+        
+    def __getitem__(self, idx):
+        img_path, seq, frame_idx = self.samples[idx]
+        
+        img = Image.open(img_path).convert("RGB")
+        w_img, h_img = img.size
+        
+        bboxes = []
+        classes = []
+        
+        frame_anns = self.annotations[seq].get(frame_idx, [])
+        for box in frame_anns:
+            xmin, ymin, w, h = box
+            # Normalize to relative [0-1]
+            xc = (xmin + w/2) / w_img
+            yc = (ymin + h/2) / h_img
+            wn = w / w_img
+            hn = h / h_img
+            
+            xc = max(0.0, min(1.0, xc))
+            yc = max(0.0, min(1.0, yc))
+            wn = max(0.0, min(1.0, wn))
+            hn = max(0.0, min(1.0, hn))
+            
+            bboxes.append([xc, yc, wn, hn])
+            classes.append(2)  # Model class 2: Trucks
+            
+        # Apply augmentations
+        img, bboxes = self.apply_augmentations(img, bboxes)
+        
+        # Apply normalization
+        img_tensor = self.normalize_transform(img)
+        
+        # Build targets
+        grid_obj, grid_bbox, grid_class = self.construct_grid_target(bboxes, classes)
+        
+        return img_tensor, grid_obj, grid_bbox, grid_class, img_path
+

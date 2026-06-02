@@ -6,7 +6,8 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from cobrassm.vision_model import CobraForObjectDetection
-from dataset import VisDrone3ClassDataset, ExcavatorsCOCODataset
+from dataset import VisDrone3ClassDataset, ExcavatorsCOCODataset, UAVDTDataset
+
 
 def compute_yolo_loss(preds, grid_obj, grid_bbox, grid_class):
     pred_bboxes = preds['bboxes']
@@ -71,7 +72,7 @@ def evaluate(model, val_loader, device):
 
 def main():
     parser = argparse.ArgumentParser(description="Train Cobra-YOLO Model")
-    parser.add_argument("--dataset", type=str, required=True, choices=["visdrone", "excavators", "combined"], help="Dataset to train on")
+    parser.add_argument("--dataset", type=str, required=True, choices=["visdrone", "excavators", "combined", "uavdt", "combined_all"], help="Dataset to train on")
     parser.add_argument("--epochs", type=int, default=10, help="Number of epochs to train")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
@@ -103,7 +104,13 @@ def main():
         print("Loading Excavators dataset splits...")
         train_dataset = ExcavatorsCOCODataset(root_dir, split="train", img_size=args.img_size, grid_size=args.grid_size, num_classes=3, augment=True)
         val_dataset = ExcavatorsCOCODataset(root_dir, split="val", img_size=args.img_size, grid_size=args.grid_size, num_classes=3, augment=False)
-    else:
+    elif args.dataset == "uavdt":
+        root_dir = os.path.join("Data", "UAVDT")
+        
+        print("Loading UAVDT dataset splits...")
+        train_dataset = UAVDTDataset(root_dir, split="train", img_size=args.img_size, grid_size=args.grid_size, num_classes=3, augment=True)
+        val_dataset = UAVDTDataset(root_dir, split="val", img_size=args.img_size, grid_size=args.grid_size, num_classes=3, augment=False)
+    elif args.dataset == "combined":
         visdrone_train_dir = os.path.join("Data", "extracted", "VisDrone2019-DET-train")
         visdrone_val_dir = os.path.join("Data", "extracted", "VisDrone2019-DET-val")
         excavators_root_dir = os.path.join("Data", "Excavators")
@@ -118,6 +125,26 @@ def main():
         from torch.utils.data import ConcatDataset
         train_dataset = ConcatDataset([visdrone_train, excavators_train])
         val_dataset = ConcatDataset([visdrone_val, excavators_val])
+    else:
+        visdrone_train_dir = os.path.join("Data", "extracted", "VisDrone2019-DET-train")
+        visdrone_val_dir = os.path.join("Data", "extracted", "VisDrone2019-DET-val")
+        excavators_root_dir = os.path.join("Data", "Excavators")
+        uavdt_root_dir = os.path.join("Data", "UAVDT")
+        
+        print("Loading combined all (VisDrone + Excavators + UAVDT) dataset splits...")
+        visdrone_train = VisDrone3ClassDataset(visdrone_train_dir, img_size=args.img_size, grid_size=args.grid_size, num_classes=3, augment=True)
+        visdrone_val = VisDrone3ClassDataset(visdrone_val_dir, img_size=args.img_size, grid_size=args.grid_size, num_classes=3, augment=False)
+        
+        excavators_train = ExcavatorsCOCODataset(excavators_root_dir, split="train", img_size=args.img_size, grid_size=args.grid_size, num_classes=3, augment=True)
+        excavators_val = ExcavatorsCOCODataset(excavators_root_dir, split="val", img_size=args.img_size, grid_size=args.grid_size, num_classes=3, augment=False)
+        
+        uavdt_train = UAVDTDataset(uavdt_root_dir, split="train", img_size=args.img_size, grid_size=args.grid_size, num_classes=3, augment=True)
+        uavdt_val = UAVDTDataset(uavdt_root_dir, split="val", img_size=args.img_size, grid_size=args.grid_size, num_classes=3, augment=False)
+        
+        from torch.utils.data import ConcatDataset
+        train_dataset = ConcatDataset([visdrone_train, excavators_train, uavdt_train])
+        val_dataset = ConcatDataset([visdrone_val, excavators_val, uavdt_val])
+
 
     print(f"Train samples: {len(train_dataset)}")
     print(f"Val samples: {len(val_dataset)}")
