@@ -165,7 +165,8 @@ def main():
 
     # Load weights
     print(f"Loading checkpoint weights from: {args.checkpoint}")
-    state_dict = torch.load(args.checkpoint, map_location=device)
+    checkpoint = torch.load(args.checkpoint, map_location=device)
+    state_dict = checkpoint["model_state_dict"] if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint else checkpoint
     model.load_state_dict(state_dict)
     
     # Compute Average Evaluation Loss

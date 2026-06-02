@@ -81,6 +81,7 @@ def main():
     parser.add_argument("--model_dim", type=int, default=256, help="SSM d_model size")
     parser.add_argument("--n_layers", type=int, default=4, help="Number of Cobra layers")
     parser.add_argument("--save_dir", type=str, default="cobra_trained", help="Directory to save checkpoint")
+    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint .pt file to resume training from")
     args = parser.parse_args()
 
     print("==================================================")
@@ -169,10 +170,25 @@ def main():
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     os.makedirs(args.save_dir, exist_ok=True)
+    start_epoch = 0
     best_val_loss = float("inf")
     save_path = os.path.join(args.save_dir, f"cobra_yolo_{args.dataset}.pt")
 
-    for epoch in range(args.epochs):
+    if args.resume and os.path.exists(args.resume):
+        print(f"Resuming training from checkpoint: {args.resume}")
+        checkpoint = torch.load(args.resume, map_location=device)
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            model.load_state_dict(checkpoint["model_state_dict"])
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            start_epoch = checkpoint["epoch"] + 1
+            best_val_loss = checkpoint["best_val_loss"]
+            print(f"Loaded checkpoint at epoch {checkpoint['epoch']} with best val loss {best_val_loss:.4f}")
+        else:
+            model.load_state_dict(checkpoint)
+            print("Loaded model state_dict (no optimizer/scheduler states found). Starting from epoch 0.")
+
+    for epoch in range(start_epoch, args.epochs):
         model.train()
         epoch_loss = 0.0
         epoch_obj = 0.0
@@ -219,7 +235,14 @@ def main():
         
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save(model.state_dict(), save_path)
+            checkpoint_state = {
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "epoch": epoch,
+                "best_val_loss": best_val_loss
+            }
+            torch.save(checkpoint_state, save_path)
             print(f"[*] New best val loss! Saved model checkpoint to {save_path}")
 
     print("\nTraining completed successfully!")

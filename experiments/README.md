@@ -84,13 +84,29 @@ python experiments/eval_cobra_yolo.py --dataset excavators --split test --checkp
 
 ---
 
-## 🧬 Architectural Ablation Studies (`benchmark_ablation_unified.py`)
+## 🧬 Architectural Ablation Studies & Benchmarks
 
-Conduct structural comparisons of sequence-based Cobra-YOLO with standard convolutional YOLO baselines (**YOLOv8** and **YOLOv5**) measuring parameter counts, sequence complexities, average latencies (ms), and frame throughput (FPS).
+Conduct structural comparisons of sequence-based Cobra-YOLO with standard convolutional YOLO baselines (**YOLOv5**, **YOLOv6**, **YOLOv8**, **YOLOv10**, and **YOLOv11**) measuring parameter counts, sequence complexities, average latencies (ms), and frame throughput (FPS).
 
-### 1. Run Ablation on UAVDT
+### 1. Run Local Validation Ablation Benchmark
+Verify local performance compared against YOLOv6, YOLOv8, YOLOv10, and YOLOv11 on local validation subsets:
+```powershell
+python experiments/local_benchmark_ablation.py
+```
+*Note: Results are printed to the console and automatically saved to `experiments/local_ablation_results.md`.*
+
+### 2. Run Unified Ablation on specific datasets
+To benchmark Cobra-YOLO against YOLOv5, YOLOv6, YOLOv8, YOLOv10, and YOLOv11 on UAVDT/VisDrone:
 ```powershell
 python experiments/benchmark_ablation_unified.py --dataset uavdt --split val --checkpoint cobra_trained/cobra_yolo_uavdt.pt
 ```
+*Note: Summaries are saved automatically to a markdown report `experiments/ablation_results_<dataset>_<split>.md`.*
 
-*Note: Summaries are saved automatically to a markdown report `experiments/ablation_results_<dataset>_val.md`.*
+---
+
+## 🔄 Resuming Training from Checkpoints
+You can pause and resume training of the Cobra-YOLO models from any saved checkpoint `.pt` file using the `--resume` argument. This automatically loads the model weights, optimizer state, Cosine Annealing learning rate scheduler, and restarts from the correct epoch:
+
+```powershell
+python experiments/train_cobra_yolo.py --dataset combined_all --epochs 15 --batch_size 8 --lr 1e-4 --resume cobra_trained/cobra_yolo_combined_all.pt
+```
